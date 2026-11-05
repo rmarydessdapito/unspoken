@@ -31,12 +31,8 @@ function check(name, cond, detail = '') {
   passed++;
 }
 
-// tiny PNG to use as cover art
-const PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAIAAAAuKetIAAAAP0lEQVR4nO3PQQ0AIBDAsIF/z4cKHl0VVMs4ePaSOoIGNKABDWhAAxrQgAY0oAENaEADGtCABjSgAQ1oQAMa+B0W2AEBS/YRWQAAAABJRU5ErkJggg==',
-  'base64',
-);
-writeFileSync(`${OUT}/cover.png`, PNG);
+// sample cover art (palette colours only)
+const COVER = 'tests/fixtures/cover.jpg';
 
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe' });
 await new Promise((resolve, reject) => {
@@ -156,12 +152,14 @@ try {
   await clickText('nostalgic', '.chip');
   await page.type('.tag-input', 'night\n');
   const input = await page.$('[data-testid="cover-gallery-input"]');
-  await input.uploadFile(`${OUT}/cover.png`);
+  await input.uploadFile(COVER);
   await page.waitForFunction(() => document.body.innerText.includes('frame it'), { timeout: 5000 });
   await sleep(500);
   await clickText('use this');
   await page.waitForFunction(() => !!document.querySelector('.customize .cover img'), { timeout: 5000 });
   check('cover artwork uploads and crops', true);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await sleep(300);
   await shot('05-customize');
   await clickText('keep it');
 
@@ -194,6 +192,9 @@ try {
   await sleep(2500);
   const pos = await page.$eval('.player-times span', (e) => e.textContent);
   check('playback runs', pos !== '00:00', `at ${pos}`);
+  await sleep(1500); // let the saved toast fade
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await sleep(300);
   await shot('06-detail-playing');
   await clickText('1.5x', '.speed');
   check('playback speed changes', await page.$eval('.speed.is-on', (e) => e.textContent === '1.5x'));
