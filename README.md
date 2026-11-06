@@ -1,177 +1,317 @@
+<div align="center">
+
 # unspoken
 
-_for everything left unsaid._
+### _for everything left unsaid._
 
-unspoken is a private voice journal built around the feeling of leaving a voicemail. You tap one button, hear the beep, and talk — for ten seconds or two hours. Pause whenever you need to. When you're done, you can give it a title, a little context, a mood, tags, an album-style cover photo and more photos — or keep nothing but your voice. Over time it becomes a shelf of small album covers: different days, people, feelings, and versions of you.
+A private voice journal built around the feeling of leaving a voicemail.
 
-There are no accounts, no profiles, no feed. Everything stays on your device.
+![unspoken — home, recording, paused, customizing, playback and library screens](docs/screenshots.png)
 
----
-
-## what's inside
-
-| | |
-|---|---|
-| **leave a voicemail** | beep, live timer, live gold waveform, breathing mic. pause / resume / finish / cancel. no time limit. |
-| **need a little help?** | 15 optional prompts, refreshable, never required. |
-| **you got it out.** | optional title, description, mood, tags, recording date & time, cover art (upload, camera, crop & reposition, replace, remove), extra photos, future-me seal. |
-| **my unspoken** | grid of framed covers or compact list; sort by newest, oldest, longest, shortest, recently played, a → z; search title, description, transcript, date, mood, tags, collection; filter by mood, tag, collection, date range and length. |
-| **voicemail page** | large cover, interactive waveform (tap/drag/arrow keys to seek), ±10 s, 0.75×–2× speed, transcript (show / hide / edit / write), mood, tags, photos, edit, replace artwork, download, share (with a consent step), add to collections, delete. |
-| **unfinished thoughts** | pause and save as a draft, leave, come back days later, continue where you stopped, finish as-is or delete. |
-| **collections** | title, description, cover, many voicemails, reorder, edit, delete (the voicemails are never deleted). a voicemail can live in several. |
-| **little echoes** | an older voicemail resurfaces each day (anniversaries first). listen again, keep in a collection, or "not today". also "on this day". |
-| **future me** | seal a voicemail until tomorrow, next week, next month, your birthday, new year's day, or a date you choose. it can't be opened early. when it opens: _you have a voicemail from your past self. ♡_ |
-| **you** | name, birthday, gentle daily reminder + time, sound effects, haptics, live transcription (with disclosure), passcode, biometric unlock, auto-lock, storage usage & protection, backup & restore, delete everything. |
+</div>
 
 ---
 
-## technology & architecture
+Some thoughts are easier to say than to write. So don't write them.
 
-**An installable web app (PWA): React 19 + TypeScript + Vite, storing everything on-device in IndexedDB (via Dexie).**
+Open unspoken, tap **leave a voicemail**, hear the beep, and just talk — for ten seconds or two hours. Pause whenever you need to. When you're done, give it a title, a little context, a mood or a photo for its cover — or keep nothing but your voice.
 
-Why this fits:
+Over time it becomes a shelf of small album covers: different days, people, feelings and versions of you.
 
-- **Recording works everywhere it needs to.** `getUserMedia` + `MediaRecorder` are supported in current Chrome, Edge, Safari (iOS 14.3+ / macOS) and Firefox. Native pause/resume (`MediaRecorder.pause()`) keeps one continuous recording and never records paused time.
-- **Long recordings are safe by design.** The recorder runs with a 2-second timeslice and writes every chunk to IndexedDB the moment it arrives, together with its measured duration and waveform peaks. Nothing waits in memory until "finish". If the tab crashes or the phone kills the app, the next launch turns the interrupted recording into an unfinished thought — at most the last ~2 s are lost. There is no duration limit anywhere in the code; the only ceiling is device storage (~43 MB per hour at 96 kbps Opus).
-- **IndexedDB is real, persistent storage** (not `localStorage`), sized in gigabytes, and the app asks the browser to mark it persistent (`navigator.storage.persist()`) so it isn't evicted. Plus full backup/restore to a file you keep.
-- **One codebase, installable on phones and desktops**, works offline (service worker), no app-store gatekeeping, no server to run or pay for, and nothing about your voice ever leaves the device.
+**No accounts. No feed. No one listening.** Everything stays on your device.
 
-```
-┌──────────────── React UI (screens/, components/) ────────────────┐
-│ Home · Record · Customize · Library · Detail · Drafts ·           │
-│ Collection · Echoes · You · Onboarding · LockGate                 │
-└───────┬───────────────┬──────────────────┬───────────────────────┘
-        │               │                  │
-  lib/recorder.ts   lib/player.ts     lib/library.ts (pure: search, sort,
-  MediaRecorder →   one timeline over  echoes, future-me dates, peaks)
-  chunks + peaks    1..n segments
-        │               │
-        └──── db/repo.ts (Dexie) ──── IndexedDB "unspoken"
-              voicemails · chunks · images · collections · settings
-```
+## contents
 
-- **Voicemail** = metadata + 1..n **segments**. Pausing never creates a new segment; only continuing a draft on another occasion does. Playback (`SegmentedPlayer`) treats segments as one seamless timeline; download/share produce one file (the original file for one segment, a joined WAV for several).
-- **Waveforms** come from loudness peaks captured live while recording (10/s), so even an hour-long voicemail draws instantly without decoding audio.
+- [quick start](#quick-start)
+- [what you can do](#what-you-can-do)
+- [how your voice is kept safe](#how-your-voice-is-kept-safe)
+- [privacy](#privacy)
+- [share it with someone](#share-it-with-someone)
+- [browser support](#browser-support)
+- [troubleshooting](#troubleshooting)
+- [for developers](#for-developers)
+- [testing](#testing)
+- [known limits](#known-limits)
 
 ---
 
-## project structure
+## quick start
 
-```
-.
-├── index.html                  app shell
-├── package.json                scripts & dependencies
-├── vite.config.ts              vite + PWA (manifest, offline cache) + vitest
-├── tsconfig.json
-├── .env.example                no secrets needed — documented as such
-├── vercel.json                 SPA rewrite for vercel
-├── public/
-│   ├── icon.svg                app icon (gold mic in a gold frame)
-│   ├── icon-maskable.svg
-│   ├── sw-notify.js            notification-tap handler, imported into the service worker
-│   └── _redirects              SPA fallback for netlify
-├── src/
-│   ├── main.tsx                boot: recover interrupted recordings, lock, render
-│   ├── App.tsx                 routes + layout (nav, mini player, onboarding redirect)
-│   ├── styles/global.css       the whole visual system (palette, type, components)
-│   ├── db/
-│   │   ├── types.ts            data model, settings defaults, moods
-│   │   ├── db.ts               Dexie schema, persistent-storage request
-│   │   └── repo.ts             all reads/writes: voicemails, chunks, images, collections, settings
-│   ├── lib/
-│   │   ├── recorder.ts         recording engine (chunked, crash-safe, pause/resume, drafts)
-│   │   ├── player.ts           multi-segment playback, seek, ±10 s, speed
-│   │   ├── library.ts          search, filters, sort, peaks downsampling, little echoes, future me
-│   │   ├── backup.ts           streaming zip backup & restore
-│   │   ├── audioExport.ts      single-file download / share, WAV join for multi-session voicemails
-│   │   ├── images.ts           downscale, square crop
-│   │   ├── lock.ts             PBKDF2 passcode, WebAuthn biometric unlock
-│   │   ├── notify.ts           notifications & daily reminder logic
-│   │   ├── transcription.ts    optional live transcription (Web Speech API)
-│   │   ├── sounds.ts           synthesized beep / click, haptics
-│   │   ├── prompts.ts          recording prompts & reminder lines
-│   │   └── format.ts           durations, dates, greetings, default titles
-│   ├── hooks/                  useSettings, usePlayer, useImageUrl, useNow
-│   ├── components/             Cover, Waveform, CoverPicker (+crop), Fields, Sheet, Toast,
-│   │                           BottomNav, MiniPlayer, VoicemailItem, CollectionPicker,
-│   │                           LockGate, Background, ErrorBoundary, Icon
-│   └── screens/                Onboarding, Home, Record, Customize, Detail, Library,
-│                               Drafts, CollectionDetail, Echoes, You, parts
-├── tests/
-│   ├── library.test.ts         formatting, search/sort/filter, peaks, echoes, future me, reminders
-│   └── repo.test.ts            persistence, crash recovery, cascade delete, collections, backup round-trip
-└── scripts/e2e.mjs             end-to-end run in real Chrome with a fake microphone
-```
-
----
-
-## setup
-
-Requirements: **Node.js 20+** (tested on 22) and npm.
+You need [Node.js](https://nodejs.org) 20 or newer and [Git](https://git-scm.com/downloads).
 
 ```bash
-npm install          # dependencies
-npm run dev          # http://localhost:5173 — open on your phone via the network URL vite prints
+git clone https://github.com/rmarydessdapito/project-unspoken
+cd project-unspoken
+npm install
+npm run dev
 ```
 
-- **Environment:** nothing to configure. `.env.example` exists only to say so.
-- **Database:** none to initialise. IndexedDB is created automatically on first launch.
-- **Permissions:** the browser asks for the **microphone** the first time you record. Notifications are only requested if you turn on reminders. Camera access is handled by the system photo picker.
-- **HTTPS:** microphones, service workers and biometrics require a secure context. `localhost` counts; anywhere else (including testing on your phone over the LAN), serve over HTTPS — e.g. deploy, or run `npx vite --host` behind a tunnel such as `cloudflared tunnel --url http://localhost:5173`.
+Open **http://localhost:5173**, allow the microphone, and leave your first voicemail.
 
-### build & deploy
-
-```bash
-npm run build        # type-check + production build into dist/
-npm run preview      # serve the production build locally
-```
-
-`dist/` is a static site. Deploy it anywhere that serves HTTPS with an SPA fallback:
-Netlify (uses `public/_redirects`), Vercel (uses `vercel.json`), Cloudflare Pages, GitHub Pages (add a 404.html copy of index.html), or any static host. Then on a phone: open the URL → **Add to Home Screen** to install it as an app.
-
-### tests
-
-```bash
-npm test                           # unit + data-layer tests (vitest, fake IndexedDB)
-npm run build && npm run test:e2e  # full app in real Chrome with a fake microphone
-LONG_MINUTES=20 npm run test:e2e   # … plus one continuous long recording
-```
-
-The e2e script needs Google Chrome or Chromium (set `CHROME_PATH` if it isn't in a standard place). Screenshots and a results log land in `e2e-artifacts/`.
+There is nothing else to set up: no database to create, no keys, no `.env` values.
 
 ---
 
-## verification
+## what you can do
 
-Tested before delivery:
+### 🎙 leave a voicemail
+- **one tap to start** — a soft beep, then _"go ahead. i'm listening."_
+- **no time limit** — record a quick thought or an hour-long ramble
+- **pause and resume** whenever you like; it stays one recording and paused time is never kept
+- live timer, a breathing microphone and a gold waveform that moves with your voice
+- **need a little help?** — fifteen optional prompts, like _"how are you, really?"_ or _"what do you wish you could say?"_
 
-- **22 unit/data tests** pass — duration formatting up to multi-hour, greetings, default titles, search across title/description/transcript/tags/mood/collection, every sort, mood/tag/collection/duration filters, waveform downsampling of 36,000-peak recordings, little-echo selection (anniversaries first; never recent, dismissed or sealed), every future-me date, prompt refresh, reminder timing, rebuilding recordings from chunks, **crash recovery**, cascade deletes, collection reordering & multi-membership, collection deletion keeping voicemails, **backup → wipe → restore round-trip** (and lock secrets excluded), rejecting non-backup files.
-- **End-to-end in real Chrome (36 checks)** — onboarding → first voicemail; recording starts immediately; timer counts; **pause freezes the timer, resume continues the same recording (one segment)**; paused time is excluded (stored and decoded audio duration both match the timer, not wall-clock time); live peaks captured; saved audio decodes as real audio; prompts; customise with title, description, mood, tag and **uploaded + cropped cover art**; detail page; **playback**, speed change, skip; **data survives a full reload**; search; grid/list toggle; collection create & add; **draft: pause → save → leave → continue later → finish** as one voicemail across two sessions with seamless playback; **closing the app mid-recording keeps it as a draft**; future-me seal is shown as locked and can't be opened early; storage view; no uncaught errors.
-- **Long-duration recording:** a continuous 20-minute recording was made, finished, saved in full and played back from near the end. Because audio is persisted in 2-second pieces and nothing accumulates in memory, an hour or more behaves the same way — limited only by free storage.
+### 🖼 make it yours
+After recording: _"you got it out. somewhere for this little piece of you."_
+- a title, a description, a mood and tags
+- **cover art** like an album sleeve — choose a photo or take one, crop and reposition it, replace or remove it any time
+- more photos attached to the same voicemail
+- change the date and time it was recorded
+- every field is optional — you can save with nothing but your voice
 
-Not testable in a headless environment, verified by code review only: camera capture (uses the OS camera picker via `capture`), biometric prompts, OS notifications, the Web Share sheet, and live transcription.
+### 📚 my unspoken
+- your library as a **grid of framed covers** or a compact list
+- sort by newest, oldest, longest, shortest, recently played or a → z
+- **search** titles, descriptions, transcripts, dates, moods, tags and collection names
+- filter by mood, tag, collection, date range and length
 
-### what needs outside configuration / honest limits
+### ▶️ listen back
+- large cover, title, date and description
+- a waveform you can tap or drag to jump anywhere
+- rewind and skip 10 seconds; speeds from 0.75× to 2×
+- a mini player that follows you around the app
+- download, share (only after you confirm), add to a collection, or delete
 
-| feature | status |
-|---|---|
-| recording, pause/resume, drafts, playback, artwork, photos, collections, search, echoes, future me, backup/restore, passcode | **fully implemented, on-device** |
-| biometric unlock | implemented with WebAuthn platform authenticators (Face ID / Touch ID / Windows Hello / Android). needs HTTPS and a device that supports it; the toggle hides itself otherwise. |
-| transcription | implemented with the browser's Web Speech API while recording — **off by default**, and disclosed in the app: in Chrome/Edge the browser sends live audio to Google/Microsoft for recognition. Firefox has no speech recognition. Transcripts can always be written/edited by hand. Transcribing an *already saved* recording would need an external speech-to-text service, which this build intentionally does not include. |
-| reminders & future-me alerts | delivered while unspoken is open or installed and running in the background; unlocks that happen while it's closed are shown the next time it opens (nothing is ever missed). Guaranteed background push would require a push server, which a server-free private app deliberately avoids. |
-| cloud backup | backups are a single .zip you save — to iCloud Drive, Google Drive, Dropbox or a computer — and restore on any device. Automatic cloud sync would require an account system and a server, which conflicts with "private, no accounts"; it isn't included. |
-| encryption at rest | recordings are protected by the device's own storage encryption (default on modern iOS, Android, macOS FileVault, Windows BitLocker). The passcode keeps people out of the app; it does not add a second layer of file encryption. |
-| iOS Safari | recording and playback work (AAC/mp4); iOS may suspend recording if you switch apps or lock the screen — whatever was captured up to that point is kept as a draft. The screen is kept awake during recording where supported. |
+### 📝 unfinished thoughts
+- pause, save as a draft and walk away
+- come back hours or days later and **continue exactly where you stopped**
+- finish it as it is, keep talking, or let it go
+
+### 🗂 collections
+- _people i love_, _late night thoughts_, _letters to future me_ — whatever you need
+- each one has its own title, description and cover
+- reorder voicemails inside it; one voicemail can live in several collections
+- deleting a collection never deletes the voicemails in it
+
+### 🌙 little echoes
+- every day, an older voicemail finds its way back to you — anniversaries first
+- _"a little echo from a year ago"_ → listen again, keep it in a collection, or say "not today"
+- an **on this day** shelf for the same date in past years
+
+### 💌 future me
+- seal a voicemail until **tomorrow, next week, next month, your birthday, new year's day** or any date you choose
+- sealed voicemails show as an envelope and can't be opened early
+- when the day comes: _"you have a voicemail from your past self. ♡"_
+
+### 🔒 you
+- your name for greetings, and your birthday for future me
+- an optional gentle daily reminder at a time you pick — never pushy
+- sound effects and haptics on or off
+- optional live transcription while you record (with a clear warning — see [privacy](#privacy))
+- a passcode, plus face or fingerprint unlock where your device supports it
+- how much space your voice is using, and protection from automatic clean-up
+- back up everything to one file, and restore it on any device
+- delete everything, for good, whenever you want
+
+---
+
+## how your voice is kept safe
+
+Recording is the heart of unspoken, so it is built to never lose what you said.
+
+- **Saved as you speak.** Audio is written to the device every two seconds while you record. Nothing waits in memory until you press finish.
+- **Crashes don't erase anything.** If your phone kills the app, the battery dies or the tab closes mid-sentence, the recording comes back as an unfinished thought the next time you open unspoken. At most the last couple of seconds are lost.
+- **Interruptions are handled.** If the microphone is cut off (a phone call, unplugged headphones), unspoken saves what it has as a draft and tells you.
+- **Leaving asks first.** Trying to leave mid-recording asks whether to keep it as an unfinished thought, keep talking, or let it go.
+- **No arbitrary limits.** The only ceiling is free space on your device — about 43 MB per hour of voice.
+- **Nothing is ever deleted to make room.** If space runs low, unspoken warns you and keeps everything.
+- **Backups you hold.** One `.zip` file contains every voicemail, photo and collection. Restore it later, or on a new phone.
 
 ---
 
 ## privacy
 
-- private by default. no accounts, profiles, followers, likes or feed.
-- nothing leaves the device unless you tap **share** and confirm, or make a backup.
-- the only third party that can ever hear audio is your browser's speech service, and only if you turn on live transcription.
-- delete any voicemail, collection or everything at any time — deletion is real and immediate.
+- **Private by default.** There are no accounts, profiles, followers, likes or public feed.
+- **Nothing leaves your device** unless you tap **share** and confirm it, or make a backup yourself.
+- **Live transcription is off by default.** If you turn it on, your browser's own speech service listens while you record. In Chrome and Edge that means Google's or Microsoft's servers hear your voice. The app tells you this before you switch it on.
+- **The passcode is never stored**, only a salted hash. Face or fingerprint unlock is checked by your own device.
+- **Your recordings are protected at rest** by your device's storage encryption, which is on by default on modern phones and computers.
+- **Deleting is real.** Removing a voicemail removes its audio, cover and photos immediately.
 
 ---
 
+## share it with someone
+
+unspoken is a static website, so you can put it online for free and send people a link. Each person's voicemails stay on their own device; nobody can hear anyone else's.
+
+**Vercel (easiest)**
+1. Sign in at [vercel.com](https://vercel.com) with GitHub.
+2. **Add New → Project**, pick this repository and click **Deploy**. All the settings are detected automatically.
+3. Send people the link you get, for example `https://project-unspoken.vercel.app`.
+
+**Netlify** works the same way: **Add new site → Import from GitHub**. The `public/_redirects` file is already set up.
+
+Any static host that serves HTTPS works: build with `npm run build` and upload the `dist/` folder.
+
+**Installing it like an app:** on iPhone, open the link in Safari and tap **Share → Add to Home Screen**. On Android, open it in Chrome and tap **Install app**. It then opens full-screen and works offline.
+
+---
+
+## browser support
+
+| | recording | playback | install as app | biometric unlock | live transcription |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Chrome / Edge (desktop & Android) | ✓ | ✓ | ✓ | ✓ | ✓ ¹ |
+| Safari (iPhone, iPad, Mac) | ✓ ² | ✓ | ✓ | ✓ | ✓ |
+| Firefox | ✓ | ✓ | desktop: — | ✓ | — |
+
+¹ processed by Google or Microsoft servers.
+² iOS may pause recording if you switch apps or lock the screen. Everything captured up to that point is kept as an unfinished thought, and unspoken keeps the screen awake while recording where it can.
+
+The microphone, installing and biometric unlock need a secure connection: `localhost` while developing, or any `https://` address once deployed.
+
+---
+
+## troubleshooting
+
+**"unspoken needs your microphone to listen."**
+The microphone permission was blocked. Click the lock or settings icon next to the address bar, allow the microphone for this site, and reload.
+
+**It works on my computer, but the microphone won't start on my phone.**
+Your phone is probably opening the dev server over plain `http://`, and phones only allow the microphone over `https://`. Deploy it ([share it with someone](#share-it-with-someone)), or use an HTTPS tunnel such as `cloudflared tunnel --url http://localhost:5173`.
+
+**I can't find my recordings in a private / incognito window.**
+Private windows erase their storage when they close. Use a normal window, or install unspoken to your home screen.
+
+**I moved to a new phone.**
+On the old phone: **you → back up everything**. On the new one: **you → restore a backup** and choose that file.
+
+**I forgot my passcode.**
+There's no way around it — that's the point of a lock. You can erase the app's data from your browser's site settings and restore your most recent backup. Backups never include the passcode.
+
+**"face or fingerprint" doesn't appear.**
+Your device or browser doesn't offer a built-in biometric sensor, or the page isn't on `https://`.
+
+---
+
+## for developers
+
+### stack
+
+| | |
+|---|---|
+| UI | React 19, TypeScript, React Router 7 |
+| build | Vite 8, installable PWA via `vite-plugin-pwa` (offline support) |
+| storage | IndexedDB through Dexie 4 — audio, images and data, all on-device |
+| audio | `MediaRecorder` (Opus/WebM or AAC/MP4), Web Audio for waveform levels and sounds |
+| backup | streaming `.zip` with fflate |
+| security | Web Crypto (PBKDF2) for the passcode, WebAuthn for biometrics |
+| fonts | Cormorant Garamond (headings) and DM Sans (interface), bundled for offline use |
+
+**Why a web app?** One codebase runs on phones and computers, installs from a link without an app store, works offline, and needs no server — so there's nowhere for anyone's voice to leak to.
+
+### how it fits together
+
+```
+ screens/ + components/  (React)
+      │
+      ├── lib/recorder.ts   MediaRecorder → 2-second chunks + loudness peaks → IndexedDB
+      ├── lib/player.ts     plays 1..n recording sessions as one seamless timeline
+      ├── lib/library.ts    search, sort, filters, little echoes, future me (pure functions)
+      │
+      └── db/repo.ts        all reads & writes
+              │
+         IndexedDB "unspoken":  voicemails · chunks · images · collections · settings
+```
+
+A **voicemail** is metadata plus one or more **segments**. Pausing never creates a new segment; only continuing a draft later does. Waveforms come from loudness peaks captured live during recording, so even hour-long voicemails draw instantly.
+
+### project structure
+
+```
+src/
+├── main.tsx              startup: recover interrupted recordings, lock, render
+├── App.tsx               routes, layout, onboarding redirect
+├── styles/global.css     the full visual system and palette
+├── db/                   data model, database schema, data access
+├── lib/                  recorder, player, library logic, backup, export,
+│                         images, lock, notifications, transcription, sounds, prompts
+├── hooks/                settings, player state, images, current time
+├── components/           covers, waveforms, pickers, sheets, nav, mini player, lock screen
+└── screens/              onboarding, home, record, customize, detail, library,
+                          drafts, collection, echoes, you
+public/                   icons, notification handler, hosting redirects
+tests/                    unit and data-layer tests, sample cover art
+scripts/e2e.mjs           end-to-end test in a real browser
+docs/                     README screenshots
+```
+
+### palette
+
+| | | |
+|---|---|---|
+| deep teal | `#19383B` | main background — the walls |
+| muted ocean | `#07515C` | secondary surfaces |
+| antique gold | `#B18118` | record button, waveforms, frames, active nav |
+| warm ochre | `#89531F` | secondary buttons and accents |
+| charcoal | `#292A28` | dark surfaces, text on light |
+| warm cream | `#F1E9D9` | text on dark, reading surfaces |
+
+### scripts
+
+| command | what it does |
+|---|---|
+| `npm run dev` | start the dev server at http://localhost:5173 |
+| `npm run build` | type-check and build into `dist/` |
+| `npm run preview` | serve the production build locally |
+| `npm test` | run unit and data-layer tests |
+| `npm run test:e2e` | run the full app in Chrome with a fake microphone (build first) |
+| `npm run typecheck` | type-check only |
+
+---
+
+## testing
+
+```bash
+npm test                            # 22 unit & data tests
+npm run build && npm run test:e2e   # 36 end-to-end checks in real Chrome
+LONG_MINUTES=20 npm run test:e2e    # …plus one continuous long recording
+```
+
+The end-to-end test needs Google Chrome or Chromium; set `CHROME_PATH` if it isn't in a standard place. Screenshots and a log are saved to `e2e-artifacts/`.
+
+**What's covered**
+
+- **recording** — starts on one tap, the timer counts, pause freezes it, resume continues the same recording, and paused time is excluded from both the saved length and the actual audio
+- **saving** — title, description, mood, tags and an uploaded, cropped cover; the saved audio decodes as real sound
+- **playback** — play, pause, speed and skipping, including across two separate sessions
+- **persistence** — everything survives a full reload
+- **library** — search, grid and list views, collections
+- **drafts** — pause, save, leave, continue later, and finish as one voicemail
+- **crash recovery** — closing the app mid-recording keeps it as a draft
+- **future me** — sealed voicemails show locked and can't be opened early
+- **data layer** — rebuilding recordings from chunks, cascade deletes, collection ordering, and a backup → wipe → restore round-trip
+- **long recordings** — a continuous 20-minute recording was saved in full (589 chunks), then seeked near the end and played
+
+Camera capture, biometric prompts, system notifications, the share sheet and live transcription can't run in a headless browser, so they were checked by hand and in code review only.
+
+---
+
+## known limits
+
+| feature | how it works today |
+|---|---|
+| **reminders & future-me alerts** | arrive while unspoken is open or running in the background. If your phone put it to sleep, you'll see them the next time you open it — nothing is missed, it's just not guaranteed to buzz on time. Guaranteed background alerts would need a push server. |
+| **cloud backup** | backups are a single file you save wherever you like (iCloud Drive, Google Drive, a computer). Automatic sync would need accounts and a server, which this app deliberately avoids. |
+| **transcription** | live, while you record, using the browser's speech service. Firefox doesn't offer one. Transcribing an already-saved recording would need an external speech-to-text service, which isn't included. You can always write or edit a transcript by hand. |
+| **encryption at rest** | relies on your device's own storage encryption. The passcode keeps people out of the app; it doesn't add a second layer of encryption to the files. |
+
+---
+
+<div align="center">
+
 _every recording is a little time capsule._
+
+**unspoken** · made by rmarydess
+
+</div>
