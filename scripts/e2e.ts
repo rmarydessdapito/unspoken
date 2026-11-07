@@ -1,7 +1,7 @@
 /**
  * End-to-end check of the real app in a real Chrome, using Chrome's fake microphone.
  *
- *   npm run build && npm run test:e2e
+ *   npm run build && npm run test:e2e        (runs this file with node's built-in TypeScript support)
  *   LONG_MINUTES=10 npm run test:e2e     # also runs a long continuous recording
  *
  * Needs Google Chrome or Chromium installed (set CHROME_PATH if it isn't at a standard location).
@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
+import type { ElementHandle, Page } from 'puppeteer-core';
 
 const PORT = 4179;
 const BASE = `http://localhost:${PORT}`;
@@ -21,10 +22,10 @@ const chromePath =
   ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(existsSync);
 if (!chromePath) throw new Error('Chrome not found — set CHROME_PATH');
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
-const results = [];
-function check(name, cond, detail = '') {
+const results: string[] = [];
+function check(name: string, cond: unknown, detail: string = ''): void {
   results.push(`${cond ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`);
   console.log(results.at(-1));
   if (!cond) throw new Error(`failed: ${name} ${detail}`);
@@ -35,7 +36,7 @@ function check(name, cond, detail = '') {
 const COVER = 'tests/fixtures/cover.jpg';
 
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe' });
-await new Promise((resolve, reject) => {
+await new Promise<void>((resolve, reject) => {
   server.stdout.on('data', (d) => String(d).includes(String(PORT)) && resolve());
   server.on('exit', () => reject(new Error('preview server exited')));
   setTimeout(resolve, 6000);
@@ -54,20 +55,20 @@ const browser = await puppeteer.launch({
   ],
 });
 
-const page = await browser.newPage();
+const page: Page = await browser.newPage();
 await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
-const errors = [];
-page.on('pageerror', (e) => errors.push(e.message));
+const errors: string[] = [];
+page.on('pageerror', (e) => errors.push((e as Error).message));
 page.on('dialog', (d) => d.accept());
 
 const text = () => page.evaluate(() => document.body.innerText);
-const clickText = async (label, selector = 'button, a') => {
+const clickText = async (label: string, selector: string = 'button, a'): Promise<void> => {
   const ok = await page.evaluate(
     (label, selector) => {
-      const els = [...document.querySelectorAll(selector)];
+      const els = [...document.querySelectorAll<HTMLElement>(selector)];
       const norm = (e) => e.innerText.trim().toLowerCase();
       const el = els.find((e) => norm(e) === label || e.getAttribute('aria-label') === label) ?? els.find((e) => norm(e).includes(label));
-      if (el) el.click();
+      if (el) (el as HTMLElement).click();
       return !!el;
     },
     label,
@@ -76,19 +77,20 @@ const clickText = async (label, selector = 'button, a') => {
   if (!ok) throw new Error(`could not find "${label}"`);
   await sleep(350);
 };
-const tap = async (selector) => {
+const tap = async (selector: string): Promise<void> => {
   await page.$eval(selector, (e) => e.scrollIntoView({ block: 'center' }));
   await sleep(150);
   await page.click(selector);
   await sleep(200);
 };
-const timerSeconds = async () => {
+const timerSeconds = async (): Promise<number> => {
   const t = await page.$eval('.timer', (e) => e.textContent.trim());
   const parts = t.split(':').map(Number);
   return parts.reduce((a, p) => a * 60 + p, 0);
 };
-const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` });
-const dbQuery = (fn) =>
+const shot = (name: string) => page.screenshot({ path: `${OUT}/${name}.png` });
+// runs `fn(voicemails, chunks)` inside the page against the app's real IndexedDB
+const dbQuery = (fn: (voicemails: any[], chunks: any[]) => any): Promise<any> =>
   page.evaluate(
     (src) =>
       new Promise((resolve, reject) => {
@@ -96,7 +98,7 @@ const dbQuery = (fn) =>
         req.onsuccess = () => {
           const idb = req.result;
           const tx = idb.transaction(['voicemails', 'chunks'], 'readonly');
-          const all = (store) => new Promise((r) => (tx.objectStore(store).getAll().onsuccess = (e) => r(e.target.result)));
+          const all = (store: string) => new Promise<any[]>((r) => (tx.objectStore(store).getAll().onsuccess = (e) => r((e.target as IDBRequest).result)));
           Promise.all([all('voicemails'), all('chunks')])
             .then(([voicemails, chunks]) => resolve(new Function('voicemails', 'chunks', `return (${src})(voicemails, chunks)`)(voicemails, chunks)))
             .catch(reject);
@@ -151,7 +153,8 @@ try {
   await page.type('textarea[name="description"]', 'recording this because i don’t want to forget how i felt.');
   await clickText('nostalgic', '.chip');
   await page.type('.tag-input', 'night\n');
-  const input = await page.$('[data-testid="cover-gallery-input"]');
+  const input = (await page.$('[data-testid="cover-gallery-input"]')) as ElementHandle<HTMLInputElement> | null;
+  if (!input) throw new Error('cover input not found');
   await input.uploadFile(COVER);
   await page.waitForFunction(() => document.body.innerText.includes('frame it'), { timeout: 5000 });
   await sleep(500);
@@ -176,8 +179,10 @@ try {
 
   const decoded = await page.evaluate(async (id) => {
     const req = indexedDB.open('unspoken');
-    const idb = await new Promise((r) => (req.onsuccess = () => r(req.result)));
-    const chunks = await new Promise((r) => (idb.transaction('chunks').objectStore('chunks').getAll().onsuccess = (e) => r(e.target.result)));
+    const idb = await new Promise<IDBDatabase>((r) => (req.onsuccess = () => r(req.result)));
+    const chunks = await new Promise<any[]>(
+      (r) => (idb.transaction('chunks').objectStore('chunks').getAll().onsuccess = (e) => r((e.target as IDBRequest).result)),
+    );
     const mine = chunks.filter((c) => c.voicemailId === id).sort((a, b) => a.seq - b.seq);
     const blob = new Blob(
       mine.map((c) => c.blob),
@@ -324,7 +329,7 @@ try {
     );
     await tap('[aria-label="forward 10 seconds"]');
     await page.evaluate(() =>
-      document.querySelector('.waveform').dispatchEvent(new PointerEvent('pointerdown', { clientX: window.innerWidth * 0.8, bubbles: true })),
+      document.querySelector('.waveform')!.dispatchEvent(new PointerEvent('pointerdown', { clientX: window.innerWidth * 0.8, bubbles: true })),
     );
     await tap('.play-btn.play-lg');
     await sleep(2000);
@@ -339,7 +344,7 @@ try {
   check('no uncaught page errors', errors.length === 0, errors.join(' | '));
 } catch (err) {
   await shot('zz-failure').catch(() => {});
-  console.error('\n' + err.message);
+  console.error('\n' + (err as Error).message);
   if (errors.length) console.error('page errors:', errors);
   process.exitCode = 1;
 } finally {
