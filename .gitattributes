@@ -1,0 +1,4 @@
+# Keep GitHub's language bar focused on the app's own code.
+# These two files must stay plain HTML / JavaScript because the browser loads them directly.
+index.html linguist-detectable=false
+public/sw-notify.js linguist-detectable=false

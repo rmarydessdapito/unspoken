@@ -242,7 +242,7 @@ src/
                           drafts, collection, echoes, you
 public/                   icons, notification handler, hosting redirects
 tests/                    unit and data-layer tests, sample cover art
-scripts/e2e.mjs           end-to-end test in a real browser
+scripts/e2e.ts            end-to-end test in a real browser
 docs/                     README screenshots
 ```
 
@@ -278,7 +278,7 @@ npm run build && npm run test:e2e   # 36 end-to-end checks in real Chrome
 LONG_MINUTES=20 npm run test:e2e    # …plus one continuous long recording
 ```
 
-The end-to-end test needs Google Chrome or Chromium; set `CHROME_PATH` if it isn't in a standard place. Screenshots and a log are saved to `e2e-artifacts/`.
+The end-to-end test needs Node.js 22.18 or newer (it runs the TypeScript file directly) and Google Chrome or Chromium; set `CHROME_PATH` if it isn't in a standard place. Screenshots and a log are saved to `e2e-artifacts/`.
 
 **What's covered**
 
