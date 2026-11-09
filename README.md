@@ -123,8 +123,8 @@ The fonts are Cormorant Garamond for headings and DM Sans for everything else.
 1. **Download the project.** Open a terminal and run:
 
    ```bash
-   git clone https://github.com/rmarydessdapito/project-unspoken.git
-   cd project-unspoken
+   git clone https://github.com/rmarydessdapito/unspoken.git
+   cd unspoken
    ```
 
 2. **Install the dependencies.** This downloads the libraries the project needs:
@@ -186,7 +186,7 @@ The project also includes the settings needed for [Netlify](https://netlify.com)
 ## Project Structure
 
 ```
-project-unspoken/
+unspoken/
 ├── index.html               The single HTML page the app loads into
 ├── package.json             Project info, commands and list of libraries
 ├── vite.config.ts           Settings for Vite, the installable app setup and tests
