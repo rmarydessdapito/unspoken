@@ -98,4 +98,4 @@ unspoken/
 
 ## Author
 
-**rmarydess** – [@rmarydessdapito](https://github.com/rmarydessdapito)
+**Made by** [@rmarydessdapito](https://github.com/rmarydessdapito)
