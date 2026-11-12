@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router-dom';
+import { createBrowserRouter, Navigate, Outlet, RouterProvider, ScrollRestoration, useLocation } from 'react-router-dom';
 import { Background } from './components/Background';
 import { BottomNav } from './components/BottomNav';
 import { MiniPlayer } from './components/MiniPlayer';
@@ -7,6 +7,7 @@ import { useOnboarded } from './hooks/useSettings';
 import { CollectionDetail } from './screens/CollectionDetail';
 import { Customize } from './screens/Customize';
 import { Detail } from './screens/Detail';
+import { Deleted } from './screens/Deleted';
 import { Drafts } from './screens/Drafts';
 import { Echoes } from './screens/Echoes';
 import { Home } from './screens/Home';
@@ -26,6 +27,8 @@ function Layout() {
     <div className={`app ${immersive ? 'is-immersive' : ''}`}>
       <div className="room-light" aria-hidden="true" />
       <Outlet />
+      {/* going back returns you to the same spot in a long list */}
+      <ScrollRestoration />
       {!immersive && <MiniPlayer />}
       {!immersive && <BottomNav />}
       {!immersive && <SideNav />}
@@ -60,6 +63,7 @@ const router = createBrowserRouter([
       { path: '/record', element: <Record /> },
       { path: '/library', element: <Library /> },
       { path: '/drafts', element: <Drafts /> },
+      { path: '/deleted', element: <Deleted /> },
       { path: '/echoes', element: <Echoes /> },
       { path: '/you', element: <You /> },
       { path: '/voicemail/:id', element: <Detail /> },
