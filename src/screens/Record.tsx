@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../db/db';
 import { moveToDeleted, updateVoicemail } from '../db/repo';
 import { Icon } from '../components/Icon';
@@ -7,7 +7,8 @@ import { Sheet } from '../components/Sheet';
 import { useToast } from '../components/Toast';
 import { LiveWaveform } from '../components/Waveform';
 import { useSettings } from '../hooks/useSettings';
-import { formatDuration } from '../lib/format';
+import { formatBytes, formatDuration } from '../lib/format';
+import { readStorageStatus, type StorageStatus } from '../lib/nudges';
 import { player } from '../lib/player';
 import { pickPrompts } from '../lib/prompts';
 import { describeMicError, micPermission, recordingSupported, VoicemailRecorder, type RecorderState } from '../lib/recorder';
@@ -28,10 +29,12 @@ export function Record() {
   const transcriber = useRef<LiveTranscriber | null>(null);
   const wakeLock = useRef<WakeLockSentinelLike | null>(null);
   const started = useRef(false);
+  const skipStorageCheck = useRef(false);
   const [state, setState] = useState<RecorderState>('idle');
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
+  const [lowStorage, setLowStorage] = useState<StorageStatus | null>(null);
   const [justStarted, setJustStarted] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [showPrompts, setShowPrompts] = useState(false);
@@ -39,6 +42,18 @@ export function Record() {
   const [prompt, setPrompt] = useState<string | null>(null);
   const [liveText, setLiveText] = useState('');
   const [draftInfo, setDraftInfo] = useState<{ durationMs: number; prompt: string | null } | null>(null);
+
+  // one calm announcement per meaningful change (the timer and the changing headline stay silent)
+  const [announcement, setAnnouncement] = useState('');
+  const previousState = useRef<RecorderState>('idle');
+  useEffect(() => {
+    const prev = previousState.current;
+    previousState.current = state;
+    if (prev === state) return;
+    if (state === 'recording') setAnnouncement(prev === 'paused' ? 'recording resumed.' : 'recording.');
+    else if (state === 'paused') setAnnouncement('recording paused.');
+    else if (state === 'stopping') setAnnouncement('saving your voicemail.');
+  }, [state]);
 
   const active = state === 'recording' || state === 'paused' || state === 'starting' || state === 'stopping';
 
@@ -125,6 +140,16 @@ export function Record() {
       started.current = false;
       return;
     }
+    // room is getting tight: say so *before* starting, and let the person decide (it's an estimate, so never a block)
+    if (!skipStorageCheck.current) {
+      const storage = await readStorageStatus();
+      if (storage.level === 'low') {
+        setLowStorage(storage);
+        started.current = false;
+        return;
+      }
+    }
+    setLowStorage(null);
     player.pause();
     // the first time, the browser will ask — say so, so the pop-up isn't a surprise
     setAsking((await micPermission()) === 'prompt');
@@ -159,6 +184,11 @@ export function Record() {
       setError(describeMicError(err));
     }
   }, [draftId, nav, prompt, settings.haptics, settings.liveTranscription, settings.soundEffects, toast]);
+
+  const startAnyway = () => {
+    skipStorageCheck.current = true;
+    start();
+  };
 
   // auto start when arriving from "leave a voicemail"
   useEffect(() => {
@@ -282,8 +312,12 @@ export function Record() {
         <span style={{ width: 44 }} />
       </div>
 
-      <section className="record-center">
-        <h1 className="record-headline serif" aria-live="polite">
+      <p className="sr-only" role="status">
+        {announcement}
+      </p>
+
+      <section className={`record-center ${lowStorage && state === 'idle' ? 'has-notice' : ''}`}>
+        <h1 className="record-headline serif">
           {headline}
         </h1>
 
@@ -305,6 +339,23 @@ export function Record() {
 
         {liveText && state !== 'idle' && <p className="live-transcript">{liveText.slice(-220)}</p>}
 
+        {lowStorage && state === 'idle' && (
+          <div className="notice" role="alert">
+            <p>
+              space is getting tight on this device
+              {lowStorage.freeBytes != null && ` — your browser estimates about ${formatBytes(lowStorage.freeBytes)} left`}. that's only an estimate, and a recording
+              might not save if it runs out. you can free up space or back up first, or record anyway.
+            </p>
+            <div className="btn-row">
+              <Link to="/you" className="btn btn-ghost btn-sm">
+                manage space
+              </Link>
+              <button className="btn btn-gold btn-sm" onClick={startAnyway}>
+                record anyway
+              </button>
+            </div>
+          </div>
+        )}
         {asking && state === 'starting' && <p className="muted small">your browser will ask to use the microphone — tap allow.</p>}
         {error && (
           <div className="error-note record-error" role="alert">
