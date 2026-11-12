@@ -102,104 +102,109 @@ export function Customize() {
         <PageHeader title="edit details" back />
       )}
 
-      <div className="customize-cover">
-        <CoverPicker imageId={vm.coverId} onChange={setCover}>
-          <Cover imageId={vm.coverId} seed={vm.id} title={form.title || defaultTitle(vm.recordedAt)} peaks={vm.peaks} size="lg" />
-        </CoverPicker>
-        <p className="muted small center">{formatDuration(vm.durationMs)} · artwork is optional</p>
-      </div>
-
-      <form
-        className="form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          save();
-        }}
-      >
-        <label className="field">
-          <span className="label">title</span>
-          <input
-            className="input input-serif"
-            value={form.title}
-            placeholder={defaultTitle(vm.recordedAt)}
-            onChange={(e) => set('title', e.target.value)}
-            maxLength={120}
-            name="title"
-          />
-        </label>
-        {!form.title && (
-          <div className="chips small-chips">
-            {TITLE_IDEAS.map((t) => (
-              <button key={t} type="button" className="chip chip-ghost" onClick={() => set('title', t)}>
-                {t}
-              </button>
-            ))}
+      {/* on wide screens: cover on the left, the form on the right */}
+      <div className="split">
+        <div className="split-aside">
+          <div className="customize-cover">
+            <CoverPicker imageId={vm.coverId} onChange={setCover}>
+              <Cover imageId={vm.coverId} seed={vm.id} title={form.title || defaultTitle(vm.recordedAt)} peaks={vm.peaks} size="lg" />
+            </CoverPicker>
+            <p className="muted small center">{formatDuration(vm.durationMs)} · artwork is optional</p>
           </div>
-        )}
-
-        <label className="field">
-          <span className="label">a little context</span>
-          <textarea
-            className="input"
-            rows={3}
-            value={form.description}
-            placeholder="recording this because i don't want to forget how i felt."
-            onChange={(e) => set('description', e.target.value)}
-            maxLength={2000}
-            name="description"
-          />
-        </label>
-
-        <div className="field">
-          <span className="label">how are you feeling?</span>
-          <MoodPicker value={form.mood} onChange={(m) => set('mood', m)} />
         </div>
 
-        <div className="field">
-          <span className="label">tags</span>
-          <TagInput tags={form.tags} onChange={(t) => set('tags', t)} suggestions={tagPool} />
-        </div>
-
-        <div className="field-row">
+        <form
+          className="form split-main"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
           <label className="field">
-            <span className="label">recorded on</span>
-            <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
+            <span className="label">title</span>
+            <input
+              className="input input-serif"
+              value={form.title}
+              placeholder={defaultTitle(vm.recordedAt)}
+              onChange={(e) => set('title', e.target.value)}
+              maxLength={120}
+              name="title"
+            />
           </label>
-          <label className="field">
-            <span className="label">at</span>
-            <input type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} />
-          </label>
-        </div>
-
-        <div className="field">
-          <span className="label">more photos</span>
-          <PhotoStrip ids={vm.photoIds} onRemove={removePhoto} adder={<PhotoAdder onAdd={addPhotos} />} />
-        </div>
-
-        {(form.transcript || vm.transcript) && (
-          <label className="field">
-            <span className="label">transcript</span>
-            <textarea className="input" rows={4} value={form.transcript} onChange={(e) => set('transcript', e.target.value)} />
-          </label>
-        )}
-
-        <div className="field">
-          <span className="label">send it to future me?</span>
-          <FutureMePicker unlockAt={form.unlockAt} birthday={settings.birthday} onChange={(t) => set('unlockAt', t)} />
-        </div>
-
-        <div className="form-actions">
-          {isNew && (
-            <button type="button" className="btn btn-ghost" onClick={() => setConfirmDiscard(true)}>
-              discard
-            </button>
+          {!form.title && (
+            <div className="chips small-chips">
+              {TITLE_IDEAS.map((t) => (
+                <button key={t} type="button" className="chip chip-ghost" onClick={() => set('title', t)}>
+                  {t}
+                </button>
+              ))}
+            </div>
           )}
-          <button type="submit" className="btn btn-gold btn-lg" disabled={saving}>
-            {isNew ? 'keep it' : 'save changes'}
-          </button>
-        </div>
-        {isNew && <p className="muted small center">every field is optional. you can always change these later.</p>}
-      </form>
+
+          <label className="field">
+            <span className="label">a little context</span>
+            <textarea
+              className="input"
+              rows={3}
+              value={form.description}
+              placeholder="recording this because i don't want to forget how i felt."
+              onChange={(e) => set('description', e.target.value)}
+              maxLength={2000}
+              name="description"
+            />
+          </label>
+
+          <div className="field">
+            <span className="label">how are you feeling?</span>
+            <MoodPicker value={form.mood} onChange={(m) => set('mood', m)} />
+          </div>
+
+          <div className="field">
+            <span className="label">tags</span>
+            <TagInput tags={form.tags} onChange={(t) => set('tags', t)} suggestions={tagPool} />
+          </div>
+
+          <div className="field-row">
+            <label className="field">
+              <span className="label">recorded on</span>
+              <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="label">at</span>
+              <input type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} />
+            </label>
+          </div>
+
+          <div className="field">
+            <span className="label">more photos</span>
+            <PhotoStrip ids={vm.photoIds} onRemove={removePhoto} adder={<PhotoAdder onAdd={addPhotos} />} />
+          </div>
+
+          {(form.transcript || vm.transcript) && (
+            <label className="field">
+              <span className="label">transcript</span>
+              <textarea className="input" rows={4} value={form.transcript} onChange={(e) => set('transcript', e.target.value)} />
+            </label>
+          )}
+
+          <div className="field">
+            <span className="label">send it to future me?</span>
+            <FutureMePicker unlockAt={form.unlockAt} birthday={settings.birthday} onChange={(t) => set('unlockAt', t)} />
+          </div>
+
+          <div className="form-actions">
+            {isNew && (
+              <button type="button" className="btn btn-ghost" onClick={() => setConfirmDiscard(true)}>
+                discard
+              </button>
+            )}
+            <button type="submit" className="btn btn-gold btn-lg" disabled={saving}>
+              {isNew ? 'keep it' : 'save changes'}
+            </button>
+          </div>
+          {isNew && <p className="muted small center">every field is optional. you can always change these later.</p>}
+        </form>
+      </div>
 
       <Confirm
         open={confirmDiscard}

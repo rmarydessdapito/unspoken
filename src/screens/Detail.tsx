@@ -139,156 +139,169 @@ export function Detail() {
         }
       />
 
-      <div className="detail-cover fade-in">
-        <CoverPicker imageId={vm.coverId} onChange={replaceArtwork} label="replace artwork">
-          <Cover imageId={vm.coverId} seed={vm.id} title={title} peaks={vm.peaks} size="lg" />
-        </CoverPicker>
-      </div>
-
-      <h1 className="detail-title serif">{title}</h1>
-      <p className="detail-sub">
-        {formatDate(vm.recordedAt)} · {formatTime(vm.recordedAt)} · {formatDuration(vm.durationMs)}
-      </p>
-      {vm.prompt && <p className="detail-prompt">in answer to “{vm.prompt}”</p>}
-      {vm.description && <p className="detail-desc">{vm.description}</p>}
-
-      {(vm.mood || vm.tags.length > 0) && (
-        <div className="chips detail-chips">
-          {vm.mood && <span className="chip is-on static">{vm.mood}</span>}
-          {vm.tags.map((t) => (
-            <Link key={t} to={`/library?tag=${encodeURIComponent(t)}`} className="chip chip-ghost">
-              #{t}
-            </Link>
-          ))}
+      {/* on wide screens: cover on the left, everything else on the right */}
+      <div className="split">
+        <div className="split-aside">
+          <div className="detail-cover fade-in">
+            <CoverPicker imageId={vm.coverId} onChange={replaceArtwork} label="replace artwork">
+              <Cover imageId={vm.coverId} seed={vm.id} title={title} peaks={vm.peaks} size="lg" />
+            </CoverPicker>
+          </div>
         </div>
-      )}
 
-      <section className="player-card">
-        <Waveform peaks={vm.peaks} progress={progress} onSeek={seek} durationMs={vm.durationMs} />
-        <div className="player-times">
-          <span>{formatDuration(position)}</span>
-          <span>-{formatDuration(Math.max(0, vm.durationMs - position))}</span>
-        </div>
-        <div className="player-controls">
-          <button className="icon-btn" onClick={() => skip(-10_000)} aria-label="rewind 10 seconds">
-            <Icon name="back10" size={28} />
-          </button>
-          <button className="play-btn play-lg" onClick={togglePlay} aria-label={current && snap.playing ? 'pause' : 'play'}>
-            <Icon name={current && snap.playing ? 'pause' : 'play'} fill="currentColor" strokeWidth={0} size={30} />
-          </button>
-          <button className="icon-btn" onClick={() => skip(10_000)} aria-label="forward 10 seconds">
-            <Icon name="fwd10" size={28} />
-          </button>
-        </div>
-        <div className="speeds" role="radiogroup" aria-label="playback speed">
-          {SPEEDS.map((s) => (
-            <button key={s} role="radio" aria-checked={snap.rate === s} className={`speed ${snap.rate === s ? 'is-on' : ''}`} onClick={() => player.setRate(s)}>
-              {s}x
-            </button>
-          ))}
-        </div>
-        {current && snap.error && <p className="error-note">{snap.error}</p>}
-      </section>
-
-      <div className="action-row">
-        <button className="action" onClick={() => setColOpen(true)}>
-          <Icon name="folder" />
-          <span>collect</span>
-        </button>
-        <button className="action" onClick={download}>
-          <Icon name="download" />
-          <span>download</span>
-        </button>
-        <button className="action" onClick={() => setShareOpen(true)}>
-          <Icon name="share" />
-          <span>share</span>
-        </button>
-        <button className="action danger" onClick={() => setConfirmDelete(true)}>
-          <Icon name="trash" />
-          <span>delete</span>
-        </button>
-      </div>
-      {busy && <p className="muted small center">{busy}</p>}
-
-      {collections.length > 0 && (
-        <p className="small muted">
-          kept in{' '}
-          {collections.map((c, i) => (
-            <span key={c.id}>
-              {i > 0 && ', '}
-              <Link to={`/collection/${c.id}`} className="link">
-                {c.title}
-              </Link>
-            </span>
-          ))}
-        </p>
-      )}
-
-      {vm.photoIds.length > 0 && (
-        <section className="section">
-          <h2 className="section-title serif">little photos</h2>
-          <PhotoStrip ids={vm.photoIds} />
-        </section>
-      )}
-
-      <section className="section">
-        <div className="section-head">
-          <h2 className="section-title serif">transcript</h2>
-          {vm.transcript && !editingTranscript && (
-            <button className="link small" onClick={() => updateVoicemail(vm.id, { transcriptVisible: !vm.transcriptVisible })}>
-              {vm.transcriptVisible ? 'hide' : 'show'}
-            </button>
-          )}
-        </div>
-        {editingTranscript ? (
-          <>
-            <textarea className="input" rows={6} value={transcriptDraft} onChange={(e) => setTranscriptDraft(e.target.value)} aria-label="transcript" />
-            <div className="sheet-actions">
-              <button className="btn btn-ghost" onClick={() => setEditingTranscript(false)}>
-                cancel
-              </button>
-              <button
-                className="btn btn-gold"
-                onClick={async () => {
-                  await updateVoicemail(vm.id, { transcript: transcriptDraft.trim(), transcriptVisible: true });
-                  setEditingTranscript(false);
-                }}
-              >
-                save
-              </button>
-            </div>
-          </>
-        ) : vm.transcript ? (
-          vm.transcriptVisible && (
-            <div className="reading-surface">
-              <p>{vm.transcript}</p>
-              <button
-                className="link small"
-                onClick={() => {
-                  setTranscriptDraft(vm.transcript);
-                  setEditingTranscript(true);
-                }}
-              >
-                edit transcript
-              </button>
-            </div>
-          )
-        ) : (
-          <p className="muted small">
-            no transcript. the audio is the entry —{' '}
-            <button
-              className="link"
-              onClick={() => {
-                setTranscriptDraft('');
-                setEditingTranscript(true);
-              }}
-            >
-              write one
-            </button>{' '}
-            or turn on live transcription under “you”.
+        <div className="split-main">
+          <h1 className="detail-title serif">{title}</h1>
+          <p className="detail-sub">
+            {formatDate(vm.recordedAt)} · {formatTime(vm.recordedAt)} · {formatDuration(vm.durationMs)}
           </p>
-        )}
-      </section>
+          {vm.prompt && <p className="detail-prompt">in answer to “{vm.prompt}”</p>}
+          {vm.description && <p className="detail-desc">{vm.description}</p>}
+
+          {(vm.mood || vm.tags.length > 0) && (
+            <div className="chips detail-chips">
+              {vm.mood && <span className="chip is-on static">{vm.mood}</span>}
+              {vm.tags.map((t) => (
+                <Link key={t} to={`/library?tag=${encodeURIComponent(t)}`} className="chip chip-ghost">
+                  #{t}
+                </Link>
+              ))}
+            </div>
+          )}
+
+          <section className="player-card">
+            <Waveform peaks={vm.peaks} progress={progress} onSeek={seek} durationMs={vm.durationMs} />
+            <div className="player-times">
+              <span>{formatDuration(position)}</span>
+              <span>-{formatDuration(Math.max(0, vm.durationMs - position))}</span>
+            </div>
+            <div className="player-controls">
+              <button className="icon-btn" onClick={() => skip(-10_000)} aria-label="rewind 10 seconds">
+                <Icon name="back10" size={28} />
+              </button>
+              <button className="play-btn play-lg" onClick={togglePlay} aria-label={current && snap.playing ? 'pause' : 'play'}>
+                <Icon name={current && snap.playing ? 'pause' : 'play'} fill="currentColor" strokeWidth={0} size={30} />
+              </button>
+              <button className="icon-btn" onClick={() => skip(10_000)} aria-label="forward 10 seconds">
+                <Icon name="fwd10" size={28} />
+              </button>
+            </div>
+            <div className="speeds" role="radiogroup" aria-label="playback speed">
+              {SPEEDS.map((s) => (
+                <button
+                  key={s}
+                  role="radio"
+                  aria-checked={snap.rate === s}
+                  className={`speed ${snap.rate === s ? 'is-on' : ''}`}
+                  onClick={() => player.setRate(s)}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
+            {current && snap.error && <p className="error-note">{snap.error}</p>}
+          </section>
+
+          <div className="action-row">
+            <button className="action" onClick={() => setColOpen(true)}>
+              <Icon name="folder" />
+              <span>collect</span>
+            </button>
+            <button className="action" onClick={download}>
+              <Icon name="download" />
+              <span>download</span>
+            </button>
+            <button className="action" onClick={() => setShareOpen(true)}>
+              <Icon name="share" />
+              <span>share</span>
+            </button>
+            <button className="action danger" onClick={() => setConfirmDelete(true)}>
+              <Icon name="trash" />
+              <span>delete</span>
+            </button>
+          </div>
+          {busy && <p className="muted small center">{busy}</p>}
+
+          {collections.length > 0 && (
+            <p className="small muted">
+              kept in{' '}
+              {collections.map((c, i) => (
+                <span key={c.id}>
+                  {i > 0 && ', '}
+                  <Link to={`/collection/${c.id}`} className="link">
+                    {c.title}
+                  </Link>
+                </span>
+              ))}
+            </p>
+          )}
+
+          {vm.photoIds.length > 0 && (
+            <section className="section">
+              <h2 className="section-title serif">little photos</h2>
+              <PhotoStrip ids={vm.photoIds} />
+            </section>
+          )}
+
+          <section className="section">
+            <div className="section-head">
+              <h2 className="section-title serif">transcript</h2>
+              {vm.transcript && !editingTranscript && (
+                <button className="link small" onClick={() => updateVoicemail(vm.id, { transcriptVisible: !vm.transcriptVisible })}>
+                  {vm.transcriptVisible ? 'hide' : 'show'}
+                </button>
+              )}
+            </div>
+            {editingTranscript ? (
+              <>
+                <textarea className="input" rows={6} value={transcriptDraft} onChange={(e) => setTranscriptDraft(e.target.value)} aria-label="transcript" />
+                <div className="sheet-actions">
+                  <button className="btn btn-ghost" onClick={() => setEditingTranscript(false)}>
+                    cancel
+                  </button>
+                  <button
+                    className="btn btn-gold"
+                    onClick={async () => {
+                      await updateVoicemail(vm.id, { transcript: transcriptDraft.trim(), transcriptVisible: true });
+                      setEditingTranscript(false);
+                    }}
+                  >
+                    save
+                  </button>
+                </div>
+              </>
+            ) : vm.transcript ? (
+              vm.transcriptVisible && (
+                <div className="reading-surface">
+                  <p>{vm.transcript}</p>
+                  <button
+                    className="link small"
+                    onClick={() => {
+                      setTranscriptDraft(vm.transcript);
+                      setEditingTranscript(true);
+                    }}
+                  >
+                    edit transcript
+                  </button>
+                </div>
+              )
+            ) : (
+              <p className="muted small">
+                no transcript. the audio is the entry —{' '}
+                <button
+                  className="link"
+                  onClick={() => {
+                    setTranscriptDraft('');
+                    setEditingTranscript(true);
+                  }}
+                >
+                  write one
+                </button>{' '}
+                or turn on live transcription under “you”.
+              </p>
+            )}
+          </section>
+        </div>
+      </div>
 
       <CollectionPicker voicemailId={vm.id} open={colOpen} onClose={() => setColOpen(false)} />
 

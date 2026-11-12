@@ -3,6 +3,7 @@
  *
  *   npm run build && npm run test:e2e        (runs this file with node's built-in TypeScript support)
  *   LONG_MINUTES=10 npm run test:e2e     # also runs a long continuous recording
+ *   VIEWPORT=1440x900 npm run test:e2e   # same checks on the desktop layout
  *
  * Needs Google Chrome or Chromium installed (set CHROME_PATH if it isn't at a standard location).
  */
@@ -56,7 +57,9 @@ const browser = await puppeteer.launch({
 });
 
 const page: Page = await browser.newPage();
-await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
+// phone size by default; VIEWPORT=1440x900 runs the same checks on the desktop layout
+const [vw, vh] = (process.env.VIEWPORT || '390x844').split('x').map(Number);
+await page.setViewport({ width: vw, height: vh, deviceScaleFactor: vw > 800 ? 1 : 2 });
 const errors: string[] = [];
 page.on('pageerror', (e) => errors.push((e as Error).message));
 page.on('dialog', (d) => d.accept());
