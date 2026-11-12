@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db } from '../db/db';
-import { deleteVoicemail, updateVoicemail } from '../db/repo';
+import { moveToDeleted, updateVoicemail } from '../db/repo';
 import type { Voicemail } from '../db/types';
 import { Icon } from '../components/Icon';
 import { Confirm } from '../components/Sheet';
@@ -48,12 +48,12 @@ export function DraftRow({ vm }: { vm: Voicemail }) {
         open={confirm}
         onClose={() => setConfirm(false)}
         title="let this one go?"
-        body="this unfinished thought and its audio will be deleted for good."
+        body="it moves to recently deleted, where you can restore it for 30 days."
         confirmLabel="delete"
         danger
         onConfirm={async () => {
-          await deleteVoicemail(vm.id);
-          toast('let go.');
+          await moveToDeleted(vm.id);
+          toast('moved to recently deleted.');
         }}
       />
     </div>

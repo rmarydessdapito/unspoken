@@ -3,8 +3,10 @@
  * (a draft continued later). Uses a single <audio> element and the durations we measured while recording,
  * because browser-recorded webm files often report an unknown (Infinity) duration.
  */
-import { segmentBlob } from '../db/repo';
+import { db } from '../db/db';
+import { markPlayed, segmentBlob } from '../db/repo';
 import type { Voicemail } from '../db/types';
+import { displayTitle } from './format';
 
 export interface PlayerSnapshot {
   voicemailId: string | null;
@@ -14,6 +16,9 @@ export interface PlayerSnapshot {
   rate: number;
   loading: boolean;
   error: string | null;
+  /** when playing a collection: where we are in it */
+  queueIndex: number;
+  queueLength: number;
 }
 
 interface LoadedSegment {
@@ -37,12 +42,20 @@ export class SegmentedPlayer {
     rate: 1,
     loading: false,
     error: null,
+    queueIndex: 0,
+    queueLength: 0,
   };
+  private queue: Voicemail[] = [];
+  private artworkUrl: string | null = null;
 
   constructor() {
     this.audio = new Audio();
     this.audio.preload = 'auto';
-    this.audio.addEventListener('timeupdate', () => this.sync());
+    this.audio.addEventListener('timeupdate', () => {
+      this.sync();
+      this.updatePositionState();
+    });
+    this.setupMediaSession();
     this.audio.addEventListener('play', () => this.sync({ playing: true }));
     this.audio.addEventListener('pause', () => this.sync({ playing: false }));
     this.audio.addEventListener('ended', () => this.handleEnded());
@@ -76,8 +89,42 @@ export class SegmentedPlayer {
     this.segments = [];
   }
 
-  async load(vm: Voicemail) {
+  /** Play several voicemails one after another, like an album. */
+  async playQueue(list: Voicemail[], start = 0) {
+    const playable = list.filter((v) => !(v.unlockAt != null && v.unlockAt > Date.now()));
+    if (!playable.length) return;
+    this.queue = playable;
+    await this.loadFromQueue(Math.min(start, playable.length - 1));
+  }
+
+  private async loadFromQueue(i: number) {
+    const vm = this.queue[i];
+    await this.load(vm, true);
+    this.sync({ queueIndex: i, queueLength: this.queue.length });
+    await this.play();
+    await markPlayed(vm.id);
+  }
+
+  next() {
+    const i = this.snap.queueIndex + 1;
+    if (this.queue.length && i < this.queue.length) return this.loadFromQueue(i);
+  }
+
+  previous() {
+    // like a music player: past the first few seconds, "previous" restarts the current one
+    if (this.snap.positionMs > 3000 || this.snap.queueIndex === 0 || !this.queue.length) return this.seek(0);
+    return this.loadFromQueue(this.snap.queueIndex - 1);
+  }
+
+  async load(vm: Voicemail, fromQueue = false) {
+    if (!fromQueue) {
+      // picking a single voicemail ends any collection that was playing
+      this.queue = [];
+      this.snap = { ...this.snap, queueIndex: 0, queueLength: 0 };
+    }
     if (this.snap.voicemailId === vm.id) return;
+    // never play a sealed future-me voicemail early, whatever screen asks
+    if (vm.unlockAt != null && vm.unlockAt > Date.now()) return;
     this.audio.pause();
     this.release();
     let offset = 0;
@@ -96,6 +143,7 @@ export class SegmentedPlayer {
     this.audio.src = await this.urlFor(0);
     this.audio.playbackRate = this.snap.rate;
     this.sync({ loading: false });
+    this.updateMediaMetadata(vm).catch(() => {});
   }
 
   async play() {
@@ -166,8 +214,60 @@ export class SegmentedPlayer {
       this.audio.src = await this.urlFor(this.index);
       this.audio.playbackRate = this.snap.rate;
       await this.audio.play().catch(() => {});
+    } else if (this.queue.length && this.snap.queueIndex < this.queue.length - 1) {
+      await this.loadFromQueue(this.snap.queueIndex + 1);
     } else {
       this.sync({ playing: false, positionMs: this.snap.durationMs });
+    }
+  }
+
+  // ---------------------------------------------------------------- lock screen & headphone controls
+
+  private setupMediaSession() {
+    const ms = typeof navigator !== 'undefined' ? navigator.mediaSession : undefined;
+    if (!ms) return;
+    const set = (action: MediaSessionAction, fn: MediaSessionActionHandler | null) => {
+      try {
+        ms.setActionHandler(action, fn);
+      } catch {
+        /* not every browser supports every action */
+      }
+    };
+    set('play', () => this.play());
+    set('pause', () => this.pause());
+    set('seekbackward', (d) => this.skip(-(d.seekOffset ?? 10) * 1000));
+    set('seekforward', (d) => this.skip((d.seekOffset ?? 10) * 1000));
+    set('seekto', (d) => d.seekTime != null && this.seek(d.seekTime * 1000));
+    set('previoustrack', () => this.previous());
+    set('nexttrack', () => this.next());
+  }
+
+  private async updateMediaMetadata(vm: Voicemail) {
+    const ms = navigator.mediaSession;
+    if (!ms || typeof MediaMetadata === 'undefined') return;
+    if (this.artworkUrl) URL.revokeObjectURL(this.artworkUrl);
+    this.artworkUrl = null;
+    const cover = vm.coverId ? await db.images.get(vm.coverId) : undefined;
+    if (cover) this.artworkUrl = URL.createObjectURL(cover.blob);
+    ms.metadata = new MediaMetadata({
+      title: displayTitle(vm),
+      artist: 'unspoken',
+      album: 'for everything left unsaid.',
+      artwork: [this.artworkUrl ? { src: this.artworkUrl, sizes: '1080x1080', type: cover!.blob.type || 'image/jpeg' } : { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }],
+    });
+  }
+
+  private updatePositionState() {
+    const ms = navigator.mediaSession;
+    if (!ms?.setPositionState || !this.snap.durationMs) return;
+    try {
+      ms.setPositionState({
+        duration: this.snap.durationMs / 1000,
+        position: Math.min(this.snap.positionMs, this.snap.durationMs) / 1000,
+        playbackRate: this.snap.rate,
+      });
+    } catch {
+      /* ignore invalid states while switching */
     }
   }
 
@@ -176,7 +276,9 @@ export class SegmentedPlayer {
     this.audio.removeAttribute('src');
     this.audio.load();
     this.release();
-    this.snap = { ...this.snap, voicemailId: null, playing: false, positionMs: 0, durationMs: 0, error: null };
+    this.queue = [];
+    this.snap = { ...this.snap, voicemailId: null, playing: false, positionMs: 0, durationMs: 0, error: null, queueIndex: 0, queueLength: 0 };
+    if (navigator.mediaSession) navigator.mediaSession.metadata = null;
     this.listeners.forEach((l) => l());
   }
 }

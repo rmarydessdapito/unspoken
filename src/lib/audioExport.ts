@@ -3,6 +3,7 @@
  * - One segment (the usual case, including paused-and-resumed recordings): the original file, untouched.
  * - Several segments (a draft continued on another day): decoded and joined into one WAV file.
  */
+import fixWebmDuration from 'fix-webm-duration';
 import { segmentBlob } from '../db/repo';
 import type { Voicemail } from '../db/types';
 import { displayTitle } from './format';
@@ -58,7 +59,15 @@ export async function voicemailAudioFile(vm: Voicemail): Promise<File> {
   const base = safeName(displayTitle(vm));
   if (vm.segments.length === 1) {
     const s = vm.segments[0];
-    const blob = await segmentBlob(s.id, s.mimeType);
+    let blob = await segmentBlob(s.id, s.mimeType);
+    // recorded webm files don't say how long they are; write the length in so other players can show it and skip around
+    if (s.mimeType.includes('webm')) {
+      try {
+        blob = await fixWebmDuration(blob, vm.durationMs, { logger: false });
+      } catch {
+        /* the original file still plays fine without it */
+      }
+    }
     return new File([blob], `${base}.${extensionFor(s.mimeType)}`, { type: s.mimeType.split(';')[0] });
   }
   const sampleRate = 24_000; // plenty for voice, keeps WAV size reasonable

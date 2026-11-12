@@ -23,12 +23,18 @@ export function MiniPlayer() {
           <span className="mini-title">{displayTitle(vm)}</span>
           <span className="mini-sub">
             {formatDuration(snap.positionMs)} / {formatDuration(snap.durationMs)}
+            {snap.queueLength > 1 && ` · ${snap.queueIndex + 1} of ${snap.queueLength}`}
           </span>
         </div>
       </Link>
       <button className="icon-btn" onClick={() => player.toggle()} aria-label={snap.playing ? 'pause' : 'play'}>
         <Icon name={snap.playing ? 'pause' : 'play'} fill="currentColor" strokeWidth={0} />
       </button>
+      {snap.queueLength > 1 && snap.queueIndex < snap.queueLength - 1 && (
+        <button className="icon-btn" onClick={() => player.next()} aria-label="next voicemail">
+          <Icon name="next" size={20} />
+        </button>
+      )}
       <button className="icon-btn" onClick={() => player.unload()} aria-label="close player">
         <Icon name="close" size={18} />
       </button>
