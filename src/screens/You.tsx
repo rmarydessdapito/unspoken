@@ -1,6 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { db, requestPersistentStorage } from '../db/db';
 import { setSetting, wipeEverything } from '../db/repo';
 import type { EchoFrequency } from '../db/types';
@@ -88,6 +88,15 @@ export function You() {
   const [wipeOpen, setWipeOpen] = useState(false);
   const [wipeText, setWipeText] = useState('');
   const restoreInput = useRef<HTMLInputElement>(null);
+  const backupPanel = useRef<HTMLElement>(null);
+  const routeLocation = useLocation();
+  // arriving from Home's backup reminder: bring the backup section into view
+  useEffect(() => {
+    if ((routeLocation.state as { focus?: string } | null)?.focus === 'backup') {
+      backupPanel.current?.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      backupPanel.current?.focus({ preventScroll: true });
+    }
+  }, [routeLocation.state]);
   const [bm, bd] = (s.birthday ?? '-').split('-');
   const maxDay = bm ? DAYS_IN_MONTH[Number(bm) - 1] : 31;
 
@@ -397,7 +406,7 @@ export function You() {
           )}
         </section>
 
-        <section className="panel">
+        <section className="panel" id="backup" ref={backupPanel} tabIndex={-1}>
           <h2 className="panel-title serif">backup & export</h2>
           <p className="muted small">
             one file with every voicemail, photo, collection and setting (except your passcode). keep it in your cloud drive or on a computer, and restore it

@@ -96,6 +96,7 @@ export interface Settings {
   librarySort: SortKey;
   dismissedEchoes: Record<string, string>; // voicemailId -> date dismissed
   lastBackupAt: number | null;
+  backupNudgeDismissedAt: number | null;
   notifiedUnlocks: string[];
   /** wrong passcode guesses in a row, and when guessing is allowed again */
   failedUnlocks: number;
@@ -133,6 +134,7 @@ export const DEFAULT_SETTINGS: Settings = {
   librarySort: 'newest',
   dismissedEchoes: {},
   lastBackupAt: null,
+  backupNudgeDismissedAt: null,
   notifiedUnlocks: [],
   failedUnlocks: 0,
   lockoutUntil: null,

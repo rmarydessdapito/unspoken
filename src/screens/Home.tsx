@@ -8,21 +8,29 @@ import { Icon } from '../components/Icon';
 import { VoicemailCard } from '../components/VoicemailItem';
 import { useNow } from '../hooks/useNow';
 import { useTodaysEcho } from '../hooks/useEcho';
-import { useSettings } from '../hooks/useSettings';
+import { useSettingsStatus } from '../hooks/useSettings';
+import { setSetting } from '../db/repo';
+import { shouldNudgeBackup } from '../lib/nudges';
 import { displayTitle, formatDate, formatDuration, greeting, plural, timeAgo } from '../lib/format';
+import { ShelfSkeleton } from '../components/Skeleton';
 import { DraftRow } from './Drafts';
 
 export function Home() {
   const now = useNow();
   const nav = useNavigate();
-  const settings = useSettings();
+  const { settings, loaded: settingsLoaded } = useSettingsStatus();
   const savedRaw = useLiveQuery(() => db.voicemails.where('status').equals('saved').toArray(), []);
   const saved = savedRaw ?? [];
   const drafts = useLiveQuery(() => db.voicemails.where('status').equals('draft').reverse().sortBy('updatedAt'), []) ?? [];
-  const collections = useLiveQuery(() => db.collections.orderBy('updatedAt').reverse().toArray(), []) ?? [];
+  const collectionsRaw = useLiveQuery(() => db.collections.orderBy('updatedAt').reverse().toArray(), []);
+  const collections = collectionsRaw ?? [];
 
   const recent = [...saved].sort((a, b) => b.createdAt - a.createdAt).slice(0, 6);
   const { echo } = useTodaysEcho(savedRaw, now);
+  // a quiet suggestion, only once settings are known (so it never flashes in and out)
+  const nudgeBackup =
+    settingsLoaded &&
+    shouldNudgeBackup({ savedCount: saved.length, lastBackupAt: settings.lastBackupAt, dismissedAt: settings.backupNudgeDismissedAt, now });
   const sealed = saved.filter((v) => isLocked(v, now));
   const fresh = saved.filter((v) => v.unlockAt != null && !isLocked(v, now) && !v.unlockSeen);
 
@@ -67,7 +75,9 @@ export function Home() {
             </Link>
           )}
         </div>
-        {recent.length ? (
+        {savedRaw === undefined ? (
+          <ShelfSkeleton />
+        ) : recent.length ? (
           <div className="shelf">
             {recent.map((vm) => (
               <VoicemailCard key={vm.id} vm={vm} />
@@ -119,7 +129,9 @@ export function Home() {
             {collections.length ? 'all' : 'start one'}
           </Link>
         </div>
-        {collections.length ? (
+        {collectionsRaw === undefined ? (
+          <ShelfSkeleton />
+        ) : collections.length ? (
           <div className="shelf">
             {collections.slice(0, 6).map((c) => (
               <Link key={c.id} to={`/collection/${c.id}`} className="col-card">
@@ -133,6 +145,20 @@ export function Home() {
           <p className="empty">gather voicemails into little collections — people i love, late night thoughts…</p>
         )}
       </section>
+
+      {nudgeBackup && (
+        <aside className="nudge" aria-label="backup reminder">
+          <p className="small">
+            {settings.lastBackupAt ? "it's been a while since your last backup." : 'your voicemails live only on this device.'}{' '}
+            <Link to="/you" state={{ focus: 'backup' }} className="link">
+              back them up
+            </Link>
+          </p>
+          <button className="icon-btn" aria-label="dismiss backup reminder" onClick={() => setSetting('backupNudgeDismissedAt', Date.now())}>
+            <Icon name="close" size={16} />
+          </button>
+        </aside>
+      )}
 
       {sealed.length > 0 && (
         <p className="sealed-summary small muted">
