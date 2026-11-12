@@ -248,7 +248,7 @@ export function Record() {
         // never a success: say what was kept and stay here so it can't be missed
         transcriber.current?.stop();
         transcriber.current = null;
-        setIncomplete({ storedMs: err.storedMs, kind: err.quota ? 'storage' : incompleteKind(rec, err), empty: err.empty });
+        setIncomplete({ storedMs: err.storedMs, kind: err.phase === 'final' ? 'final' : err.quota ? 'storage' : 'write', empty: err.empty });
         return;
       }
       toast((err as Error).message);
@@ -256,7 +256,6 @@ export function Record() {
     }
   };
 
-  const incompleteKind = (rec: VoicemailRecorder, err: IncompleteRecordingError): 'storage' | 'write' | 'final' => (rec.hasFailed ? 'write' : err.quota ? 'storage' : 'final');
 
   const saveDraft = async () => {
     const rec = recRef.current;
