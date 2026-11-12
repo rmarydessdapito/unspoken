@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } fr
 import { Background } from './components/Background';
 import { BottomNav } from './components/BottomNav';
 import { MiniPlayer } from './components/MiniPlayer';
+import { SideNav } from './components/SideNav';
 import { useOnboarded } from './hooks/useSettings';
 import { CollectionDetail } from './screens/CollectionDetail';
 import { Customize } from './screens/Customize';
@@ -27,6 +28,7 @@ function Layout() {
       <Outlet />
       {!immersive && <MiniPlayer />}
       {!immersive && <BottomNav />}
+      {!immersive && <SideNav />}
       <Background />
     </div>
   );

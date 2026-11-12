@@ -120,7 +120,7 @@ export function Home() {
         </div>
         {collections.length ? (
           <div className="shelf">
-            {collections.slice(0, 8).map((c) => (
+            {collections.slice(0, 6).map((c) => (
               <Link key={c.id} to={`/collection/${c.id}`} className="col-card">
                 <Cover imageId={c.coverId} seed={c.id + 'c'} title={c.title} />
                 <span className="card-title">{c.title}</span>

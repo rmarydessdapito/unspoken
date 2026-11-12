@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
 
-const tabs = [
+export const tabs = [
   { to: '/', label: 'home', icon: 'home', end: true },
   { to: '/library', label: 'my unspoken', icon: 'library' },
   { to: '/echoes', label: 'little echoes', icon: 'echo' },
