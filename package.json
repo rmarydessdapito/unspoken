@@ -2,7 +2,7 @@
   "name": "unspoken",
   "private": true,
   "version": "1.0.0",
-  "description": "unspoken — a private voicemail journal. for everything left unsaid.",
+  "description": "unspoken \u2014 a private voicemail journal. for everything left unsaid.",
   "author": "rmarydess",
   "license": "UNLICENSED",
   "type": "module",
@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b && tsc -p tsconfig.scripts.json",
     "test": "vitest run",
-    "test:e2e": "node scripts/e2e.ts"
+    "test:e2e": "node scripts/e2e.ts",
+    "test:recovery": "node scripts/recovery.ts"
   },
   "dependencies": {
     "@fontsource/cormorant-garamond": "^5.3.0",
