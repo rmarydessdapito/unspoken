@@ -106,7 +106,8 @@ export async function recoverInterruptedRecordings(): Promise<number> {
       await updateVoicemail(vm.id, { status: 'draft' });
       recovered++;
     } else {
-      await deleteVoicemail(vm.id);
+      // an accidental tap, not something the person erased on purpose: nothing to remember
+      await deleteVoicemail(vm.id, { remember: false });
     }
   }
   return recovered;
@@ -152,9 +153,11 @@ export async function purgeOldDeleted(now = Date.now()): Promise<number> {
 }
 
 /** Erase a voicemail for good: its audio, artwork and photos. Used by "delete forever" and the 30-day clean-up. */
-export async function deleteVoicemail(id: string) {
+export async function deleteVoicemail(id: string, opts: { remember?: boolean } = {}) {
   const vm = await db.voicemails.get(id);
-  await db.transaction('rw', [db.voicemails, db.chunks, db.images, db.collections], async () => {
+  await db.transaction('rw', [db.voicemails, db.chunks, db.images, db.collections, db.settings], async () => {
+    // remember that this was erased on purpose, so restoring an older backup never quietly brings it back
+    if (opts.remember !== false) await rememberErased([id]);
     await db.chunks.where('voicemailId').equals(id).delete();
     if (vm) {
       const imageIds = [vm.coverId, ...vm.photoIds].filter(Boolean) as string[];
@@ -234,7 +237,75 @@ export async function moveInCollection(collectionId: string, index: number, delt
 export async function deleteCollection(id: string) {
   const c = await db.collections.get(id);
   await deleteImage(c?.coverId);
-  await db.collections.delete(id);
+  await db.transaction('rw', [db.collections, db.settings], async () => {
+    await rememberErased([id]);
+    await db.collections.delete(id);
+  });
+}
+
+// ---------------------------------------------------------------- erased ids (so a restore can't resurrect them)
+
+const ERASED_KEY = 'erasedIds';
+/** Enough for years of use, and small: each entry is just an id. Oldest are forgotten first. */
+const ERASED_LIMIT = 5000;
+
+export async function getErasedIds(): Promise<Set<string>> {
+  const row = await db.settings.get(ERASED_KEY);
+  return new Set(Array.isArray(row?.value) ? (row!.value as string[]) : []);
+}
+
+/** Call inside a transaction that includes db.settings. */
+export async function rememberErased(ids: string[]) {
+  const row = await db.settings.get(ERASED_KEY);
+  const current = Array.isArray(row?.value) ? (row!.value as string[]) : [];
+  const next = [...current.filter((x) => !ids.includes(x)), ...ids].slice(-ERASED_LIMIT);
+  await db.settings.put({ key: ERASED_KEY, value: next });
+}
+
+export async function forgetErased(ids: string[]) {
+  const row = await db.settings.get(ERASED_KEY);
+  if (!Array.isArray(row?.value)) return;
+  await db.settings.put({ key: ERASED_KEY, value: (row!.value as string[]).filter((x) => !ids.includes(x)) });
+}
+
+// ---------------------------------------------------------------- crash-safe restore
+
+export const RESTORE_JOURNAL_KEY = 'restoreJournal';
+
+/** What a restore in progress has added, written *before* the first change so a crash can be undone. */
+export interface RestoreJournal {
+  startedAt: number;
+  newVoicemailIds: string[];
+  newCollectionIds: string[];
+  /** audio pieces added to voicemails that were already here */
+  chunkKeys: [string, string, number][];
+  imageIds: string[];
+}
+
+/** Remove everything a restore added, using its journal. Safe to run any number of times. */
+export async function undoRestoreFromJournal(j: RestoreJournal) {
+  const committed = new Set((await db.voicemails.bulkGet(j.newVoicemailIds)).filter(Boolean).map((v) => v!.id));
+  await db.transaction('rw', [db.chunks, db.images, db.voicemails, db.collections, db.settings], async () => {
+    for (const id of j.newVoicemailIds) if (!committed.has(id)) await db.chunks.where('voicemailId').equals(id).delete();
+    for (const [voicemailId, segmentId, seq] of j.chunkKeys) {
+      await db.chunks.where('[segmentId+seq]').equals([segmentId, seq]).filter((c) => c.voicemailId === voicemailId).delete();
+    }
+    const referenced = new Set<string>();
+    if (j.imageIds.length) {
+      for (const v of await db.voicemails.toArray()) [v.coverId, ...v.photoIds].forEach((x) => x && referenced.add(x));
+      for (const c of await db.collections.toArray()) if (c.coverId) referenced.add(c.coverId);
+    }
+    await db.images.bulkDelete(j.imageIds.filter((i) => !referenced.has(i)));
+    await db.settings.delete(RESTORE_JOURNAL_KEY);
+  });
+}
+
+/** On app start: if a restore was cut off (crash, closed tab), put everything back as it was before it began. */
+export async function undoInterruptedRestore(): Promise<boolean> {
+  const row = await db.settings.get(RESTORE_JOURNAL_KEY);
+  if (!row?.value) return false;
+  await undoRestoreFromJournal(row.value as RestoreJournal);
+  return true;
 }
 
 // ---------------------------------------------------------------- everything

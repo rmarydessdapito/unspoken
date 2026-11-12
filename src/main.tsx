@@ -13,13 +13,15 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { LockGate } from './components/LockGate';
 import { ToastProvider } from './components/Toast';
 import { requestPersistentStorage } from './db/db';
-import { getSettings, purgeOldDeleted, recoverInterruptedRecordings } from './db/repo';
+import { getSettings, purgeOldDeleted, recoverInterruptedRecordings, undoInterruptedRestore } from './db/repo';
 
 async function boot() {
   const root = createRoot(document.getElementById('root')!);
   let initiallyLocked = false;
   let recovered = 0;
   try {
+    // a restore that was cut off halfway is undone first, so the library is exactly as it was before it began
+    await undoInterruptedRestore().catch((e) => console.error('could not undo an interrupted restore', e));
     // never lose a recording: anything interrupted last time becomes an unfinished thought
     recovered = await recoverInterruptedRecordings();
     // voicemails in recently deleted for more than 30 days are erased for good
