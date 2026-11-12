@@ -11,6 +11,7 @@
  *  - There is no duration limit anywhere in this file.
  */
 import { db, uid } from '../db/db';
+import type { Chunk } from '../db/types';
 import { newVoicemail, rebuildFromChunks, updateVoicemail } from '../db/repo';
 
 export const CHUNK_MS = 2000;
@@ -18,13 +19,37 @@ export const PEAKS_PER_SECOND = 10;
 /** Recordings shorter than this are treated as accidental taps, not kept. */
 export const MIN_KEEP_MS = 1000;
 
-export type RecorderState = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping' | 'stopped';
+export type RecorderState = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping' | 'stopped' | 'failed';
+
+/** Why a recording stopped before the person chose to stop it. */
+export interface WriteFailure {
+  /** the device ran out of space (as opposed to some other storage problem) */
+  quota: boolean;
+  /** how much audio is safely stored, counted from the stored pieces (not the clock) */
+  storedMs: number;
+}
+
+/** Thrown by finish() when a recording is incomplete or couldn't be finalised. The audio that was stored is kept. */
+export class IncompleteRecordingError extends Error {
+  constructor(
+    message: string,
+    public storedMs: number,
+    public quota: boolean,
+    /** true when nothing at all could be kept */
+    public empty = false,
+  ) {
+    super(message);
+    this.name = 'IncompleteRecordingError';
+  }
+}
 
 export interface RecorderCallbacks {
   onState?: (s: RecorderState) => void;
   onLevel?: (level: number) => void;
   onInterrupted?: (voicemailId: string) => void;
   onError?: (message: string) => void;
+  /** Called at most once, when a piece of audio could not be saved even after one retry. Recording has stopped. */
+  onWriteFailure?: (f: WriteFailure) => void;
 }
 
 const MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/ogg;codecs=opus'];
@@ -67,6 +92,11 @@ export function describeMicError(err: unknown): string {
   return "something went wrong starting the microphone. let's try again in a moment.";
 }
 
+export function isQuotaError(err: unknown): boolean {
+  const e = err as { name?: string; inner?: { name?: string } } | null;
+  return e?.name === 'QuotaExceededError' || e?.inner?.name === 'QuotaExceededError';
+}
+
 export class VoicemailRecorder {
   state: RecorderState = 'idle';
   voicemailId = '';
@@ -92,6 +122,11 @@ export class VoicemailRecorder {
   private writeQueue: Promise<unknown> = Promise.resolve();
   private stopResolve: (() => void) | null = null;
   private interrupted = false;
+  /** set once a chunk could not be stored; everything after that point is deliberately not stored, so there are no gaps */
+  private failed = false;
+  private failureQuota = false;
+  /** duration of the audio actually stored so far in this voicemail */
+  private storedMs = 0;
 
   constructor(cb: RecorderCallbacks = {}) {
     this.cb = cb;
@@ -101,6 +136,16 @@ export class VoicemailRecorder {
   elapsedMs(): number {
     const live = this.state === 'recording' ? performance.now() - this.resumedAt : 0;
     return this.baseMs + this.activeMs + live;
+  }
+
+  /** True when a write failed and the recording stopped early. */
+  get hasFailed(): boolean {
+    return this.failed;
+  }
+
+  /** Audio safely stored so far, including earlier segments of a resumed draft. */
+  get storedDurationMs(): number {
+    return this.baseMs + this.storedMs;
   }
 
   private setState(s: RecorderState) {
@@ -201,27 +246,57 @@ export class VoicemailRecorder {
     this.lastChunkActiveMs = active;
     const peaks = this.pendingPeaks;
     this.pendingPeaks = [];
+    // once a piece has failed, nothing later is stored: a recording with a hole in the middle would be worse than a short one
+    if (this.failed) return;
     if (!blob || blob.size === 0) {
       if (ms === 0) return;
     }
     const seq = this.seq++;
     const voicemailId = this.voicemailId;
     const segmentId = this.segmentId;
-    const total = Math.round(this.baseMs + active);
-    this.writeQueue = this.writeQueue
-      .then(async () => {
-        await db.chunks.add({ voicemailId, segmentId, seq, blob, ms, peaks });
-        await db.voicemails.update(voicemailId, { durationMs: total, updatedAt: Date.now() });
-      })
-      .catch((err) => {
-        console.error('failed to persist audio chunk', err);
-        const quota = (err as { name?: string })?.name === 'QuotaExceededError';
-        this.cb.onError?.(
-          quota
-            ? "your device is running out of space. i've kept everything so far — finish or pause to be safe."
-            : "i'm having trouble saving audio right now.",
-        );
-      });
+    this.writeQueue = this.writeQueue.then(async () => {
+      if (this.failed) return;
+      try {
+        await this.storeChunk({ voicemailId, segmentId, seq, blob, ms, peaks });
+      } catch (err) {
+        this.fail(err);
+        return;
+      }
+      this.storedMs += ms;
+      // the stored duration is only a convenience (it's recomputed from the pieces when finishing), so it never fails the recording
+      await db.voicemails.update(voicemailId, { durationMs: this.baseMs + this.storedMs, updatedAt: Date.now() }).catch(() => {});
+    });
+  }
+
+  /** Write one piece, retrying once. A failed transaction stores nothing, so a retry can't create a duplicate. */
+  private async storeChunk(row: Omit<Chunk, 'id'>) {
+    try {
+      await db.chunks.add(row);
+    } catch (first) {
+      console.warn('audio chunk write failed, retrying once', first);
+      await db.chunks.add(row);
+    }
+  }
+
+  private fail(err: unknown) {
+    if (this.failed) return;
+    console.error('failed to persist audio chunk', err);
+    this.failed = true;
+    this.failureQuota = isQuotaError(err);
+    // stop capturing straight away: audio we can't store is audio we shouldn't pretend to be recording
+    this.setState('failed');
+    try {
+      if (this.recorder && this.recorder.state !== 'inactive') this.recorder.stop();
+    } catch {
+      /* already stopping */
+    }
+    this.stream?.getTracks().forEach((t) => {
+      t.onended = null;
+      t.stop();
+    });
+    if (this.levelTimer) clearInterval(this.levelTimer);
+    this.levelTimer = null;
+    this.cb.onWriteFailure?.({ quota: this.failureQuota, storedMs: this.storedDurationMs });
   }
 
   pause() {
@@ -258,7 +333,7 @@ export class VoicemailRecorder {
   private async stopRecorder() {
     if (!this.recorder) return;
     if (this.state === 'recording') this.activeMs += performance.now() - this.resumedAt;
-    this.setState('stopping');
+    if (!this.failed) this.setState('stopping');
     if (this.recorder.state !== 'inactive') {
       const stopped = new Promise<void>((r) => (this.stopResolve = r));
       this.recorder.stop();
@@ -278,13 +353,23 @@ export class VoicemailRecorder {
     this.stream = null;
     this.audioCtx?.close().catch(() => {});
     this.audioCtx = null;
-    this.setState('stopped');
+    if (!this.failed) this.setState('stopped');
   }
 
-  /** Finish: the voicemail becomes a saved entry in "my unspoken". */
+  /**
+   * Finish: the voicemail becomes a saved entry in "my unspoken".
+   * A recording that stopped early (storage ran out) is never marked saved: it's kept as an unfinished thought
+   * and an IncompleteRecordingError tells the caller exactly how much was stored.
+   */
   async finish(): Promise<string> {
     await this.stopRecorder();
-    const vm = await rebuildFromChunks(this.voicemailId);
+    if (this.failed) throw await this.keepIncomplete();
+    let vm;
+    try {
+      vm = await rebuildFromChunks(this.voicemailId);
+    } catch (err) {
+      throw await this.finalSaveFailed(err);
+    }
     const sessionMs = (vm?.durationMs ?? 0) - this.baseMs;
     if (!vm || sessionMs < MIN_KEEP_MS) {
       if (this.baseMs === 0) {
@@ -295,13 +380,53 @@ export class VoicemailRecorder {
       // continuing a draft and finishing straight away: keep what was there, drop the blip
       await this.dropThisSession();
     }
-    await updateVoicemail(this.voicemailId, { status: 'saved' });
+    try {
+      await updateVoicemail(this.voicemailId, { status: 'saved', stoppedEarly: null });
+    } catch (err) {
+      throw await this.finalSaveFailed(err);
+    }
     return this.voicemailId;
+  }
+
+  /** The recording stopped because a write failed: keep everything that was stored as an unfinished thought. */
+  private async keepIncomplete(): Promise<IncompleteRecordingError> {
+    let stored = this.storedDurationMs;
+    try {
+      const vm = await rebuildFromChunks(this.voicemailId);
+      if (vm) stored = vm.durationMs;
+      const sessionMs = stored - this.baseMs;
+      if (!vm || (this.baseMs === 0 && sessionMs <= 0)) {
+        await this.discardData();
+        return new IncompleteRecordingError('nothing could be saved before the space ran out.', 0, this.failureQuota, true);
+      }
+      await updateVoicemail(this.voicemailId, { status: 'draft', stoppedEarly: { at: stored, reason: this.failureQuota ? 'storage' : 'write' } });
+    } catch (err) {
+      // even the bookkeeping failed; the stored audio is still there and boot recovery turns it into a draft
+      console.error('could not mark the incomplete recording', err);
+    }
+    return new IncompleteRecordingError('this recording stopped early.', stored, this.failureQuota);
+  }
+
+  /** The audio is all stored but the last bookkeeping step failed: leave it recoverable and say so plainly. */
+  private async finalSaveFailed(err: unknown): Promise<IncompleteRecordingError> {
+    console.error('final save failed', err);
+    const quota = isQuotaError(err);
+    let stored = this.storedDurationMs;
+    try {
+      await updateVoicemail(this.voicemailId, { status: 'draft' });
+    } catch {
+      /* still status 'recording' in the database: boot recovery makes it a draft */
+    }
+    return new IncompleteRecordingError("i couldn't finish saving this one, but the audio is safe as an unfinished thought.", stored, quota);
   }
 
   /** Keep it as an unfinished thought to continue later. */
   async saveDraft(): Promise<string> {
     await this.stopRecorder();
+    if (this.failed) {
+      const r = await this.keepIncomplete();
+      return r.empty ? '' : this.voicemailId;
+    }
     const vm = await rebuildFromChunks(this.voicemailId);
     if (!vm || vm.durationMs - this.baseMs < MIN_KEEP_MS) {
       if (this.baseMs === 0) {

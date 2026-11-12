@@ -22,7 +22,7 @@ export function DraftRow({ vm }: { vm: Voicemail }) {
       <div className="row-meta">
         <h3 className="row-title">{vm.prompt ?? defaultTitle(vm.createdAt)}</h3>
         <p className="row-sub">
-          {formatDuration(vm.durationMs)} so far · {timeAgo(vm.updatedAt)}
+          {formatDuration(vm.durationMs)} {vm.stoppedEarly ? (vm.stoppedEarly.reason === "storage" ? "· stopped early, space ran out" : "· stopped early") : "so far"} · {timeAgo(vm.updatedAt)}
         </p>
       </div>
       <div className="draft-actions">

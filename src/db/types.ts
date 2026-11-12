@@ -42,6 +42,8 @@ export interface Voicemail {
   deletedAt?: number | null;
   deletedFrom?: 'saved' | 'draft' | null;
   deletedCollections?: string[];
+  /** set when a recording ended early because audio couldn't be stored; cleared when it's finished normally */
+  stoppedEarly?: { at: number; reason: 'storage' | 'write' } | null;
 }
 
 export const DELETED_KEEP_DAYS = 30;

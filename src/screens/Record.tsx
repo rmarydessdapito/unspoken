@@ -11,7 +11,7 @@ import { formatBytes, formatDuration } from '../lib/format';
 import { readStorageStatus, type StorageStatus } from '../lib/nudges';
 import { player } from '../lib/player';
 import { pickPrompts } from '../lib/prompts';
-import { describeMicError, micPermission, recordingSupported, VoicemailRecorder, type RecorderState } from '../lib/recorder';
+import { describeMicError, IncompleteRecordingError, micPermission, recordingSupported, VoicemailRecorder, type RecorderState } from '../lib/recorder';
 import { haptic, playBeep, playClick } from '../lib/sounds';
 import { LiveTranscriber, transcriptionSupported } from '../lib/transcription';
 
@@ -34,6 +34,8 @@ export function Record() {
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
+  /** set when this recording ended early or couldn't be finalised; shown once, never as a success */
+  const [incomplete, setIncomplete] = useState<{ storedMs: number; kind: 'storage' | 'write' | 'final'; empty: boolean } | null>(null);
   const [lowStorage, setLowStorage] = useState<StorageStatus | null>(null);
   const [justStarted, setJustStarted] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -53,6 +55,7 @@ export function Record() {
     if (state === 'recording') setAnnouncement(prev === 'paused' ? 'recording resumed.' : 'recording.');
     else if (state === 'paused') setAnnouncement('recording paused.');
     else if (state === 'stopping') setAnnouncement('saving your voicemail.');
+    else if (state === 'failed') setAnnouncement('recording stopped early because it could not be saved.');
   }, [state]);
 
   const active = state === 'recording' || state === 'paused' || state === 'starting' || state === 'stopping';
@@ -155,7 +158,17 @@ export function Record() {
     setAsking((await micPermission()) === 'prompt');
     const rec = new VoicemailRecorder({
       onState: setState,
-      onError: (m) => toast(m),
+      onWriteFailure: (f) => {
+        // one failure, one message: the recorder only reports this once and has already stopped capturing
+        setIncomplete({ storedMs: f.storedMs, kind: f.quota ? 'storage' : 'write', empty: false });
+        transcriber.current?.stop();
+        transcriber.current = null;
+        releaseWakeLock();
+        // keep everything stored as an unfinished thought straight away (after the failing write has settled)
+        setTimeout(() => {
+          rec.saveDraft().catch(() => {});
+        }, 0);
+      },
       onInterrupted: () => {
         releaseWakeLock();
         toast('the microphone was interrupted. your thought is saved in unfinished thoughts.');
@@ -230,17 +243,32 @@ export function Record() {
       blocker.reset?.();
       nav(`/voicemail/${id}/customize?new=1`, { replace: true });
     } catch (err) {
-      toast((err as Error).message);
       releaseWakeLock();
+      if (err instanceof IncompleteRecordingError) {
+        // never a success: say what was kept and stay here so it can't be missed
+        transcriber.current?.stop();
+        transcriber.current = null;
+        setIncomplete({ storedMs: err.storedMs, kind: err.quota ? 'storage' : incompleteKind(rec, err), empty: err.empty });
+        return;
+      }
+      toast((err as Error).message);
       nav('/', { replace: true });
     }
   };
+
+  const incompleteKind = (rec: VoicemailRecorder, err: IncompleteRecordingError): 'storage' | 'write' | 'final' => (rec.hasFailed ? 'write' : err.quota ? 'storage' : 'final');
 
   const saveDraft = async () => {
     const rec = recRef.current;
     setLeaving(false);
     if (!rec) return;
     const id = await rec.saveDraft();
+    if (rec.hasFailed) {
+      // already told the person once; just leave the message up rather than claim success
+      if (id) await stopTranscript(id);
+      releaseWakeLock();
+      return;
+    }
     if (id) {
       await stopTranscript(id);
       if (prompt) await updateVoicemail(id, { prompt });
@@ -367,7 +395,27 @@ export function Record() {
         )}
       </section>
 
-      <section className="record-controls">
+      {incomplete && (
+        <div className="notice incomplete-note" role="alert" data-testid="incomplete-recording">
+          <p>
+            {incomplete.empty
+              ? "this recording couldn't be saved because there wasn't room, and nothing was kept."
+              : incomplete.kind === 'final'
+                ? `i couldn't finish saving this one, but ${formatDuration(incomplete.storedMs)} of audio is safe in unfinished thoughts.`
+                : `this recording stopped at ${formatDuration(incomplete.storedMs)} because ${incomplete.kind === 'storage' ? 'your device ran out of space' : "i couldn't save any more audio"}. what you said up to there is kept in unfinished thoughts. it isn't a finished voicemail.`}
+          </p>
+          <div className="btn-row">
+            <Link to="/you" className="btn btn-ghost btn-sm">
+              manage space
+            </Link>
+            <Link to={incomplete.empty ? "/" : "/drafts"} replace className="btn btn-gold btn-sm">
+              {incomplete.empty ? 'ok' : 'see unfinished thoughts'}
+            </Link>
+          </div>
+        </div>
+      )}
+
+      <section className="record-controls" hidden={!!incomplete}>
         {(state === 'idle' || state === 'starting') && (
           <button className="rec-main" onClick={start} disabled={state === 'starting'} aria-label={draftInfo ? 'continue recording' : 'start recording'}>
             <Icon name="mic" size={34} />
