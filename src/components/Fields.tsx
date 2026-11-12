@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { MOODS } from '../db/types';
 import { useImageUrl } from '../hooks/useImageUrl';
-import { formatDate } from '../lib/format';
-import { normalizeTag, UNLOCK_LABELS, unlockDate, type UnlockOption } from '../lib/library';
+import { formatDate, formatTime, toDateInput, untilText } from '../lib/format';
+import { MAX_UNLOCK_DATE, normalizeTag, UNLOCK_LABELS, unlockDate, type UnlockOption } from '../lib/library';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 
@@ -78,46 +78,66 @@ export function TagInput({ tags, onChange, suggestions = [] }: { tags: string[];
 
 /** Seal a voicemail until a future date. */
 export function FutureMePicker({ unlockAt, birthday, onChange }: { unlockAt: number | null; birthday: string | null; onChange: (ts: number | null) => void }) {
+  const [chosen, setChosen] = useState<UnlockOption | null>(null);
   const [custom, setCustom] = useState('');
-  const options: UnlockOption[] = ['tomorrow', 'week', 'month', 'birthday', 'newyear', 'custom'];
+  const [customError, setCustomError] = useState<string | null>(null);
+  const options: UnlockOption[] = ['tomorrow', 'week', 'month', 'birthday', 'newyear'];
+  const tomorrow = toDateInput(Date.now() + 86_400_000);
+  const pick = (o: UnlockOption | null, ts: number | null) => {
+    setChosen(o);
+    setCustomError(null);
+    onChange(ts);
+  };
   return (
     <div className="future-me">
-      <div className="chips">
-        <button type="button" className={`chip ${unlockAt == null ? 'is-on' : ''}`} onClick={() => onChange(null)}>
-          keep it open
+      <div className="chips" role="radiogroup" aria-label="when should it open?">
+        <button type="button" role="radio" aria-checked={unlockAt == null} className={`chip ${unlockAt == null ? 'is-on' : ''}`} onClick={() => pick(null, null)}>
+          don't seal it
         </button>
-        {options.map((o) =>
-          o === 'custom' ? null : (
-            <button
-              key={o}
-              type="button"
-              className="chip"
-              disabled={o === 'birthday' && !birthday}
-              title={o === 'birthday' && !birthday ? 'add your birthday under "you" first' : undefined}
-              onClick={() => onChange(unlockDate(o, { birthday }))}
-            >
-              {UNLOCK_LABELS[o]}
-            </button>
-          ),
-        )}
+        {options.map((o) => (
+          <button
+            key={o}
+            type="button"
+            role="radio"
+            aria-checked={unlockAt != null && chosen === o}
+            className={`chip ${unlockAt != null && chosen === o ? 'is-on' : ''}`}
+            disabled={o === 'birthday' && !birthday}
+            title={o === 'birthday' && !birthday ? 'add your birthday under "you" first' : undefined}
+            onClick={() => pick(o, unlockDate(o, { birthday }))}
+          >
+            {UNLOCK_LABELS[o]}
+          </button>
+        ))}
       </div>
+      {!birthday && <p className="fine">add your birthday under “you” to send it to your next birthday.</p>}
       <label className="field row-field">
         <span className="label">{UNLOCK_LABELS.custom}</span>
         <input
           type="date"
           className="input"
           value={custom}
-          min={new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)}
+          min={tomorrow}
+          max={MAX_UNLOCK_DATE}
           onChange={(e) => {
             setCustom(e.target.value);
+            if (!e.target.value) return;
             const t = unlockDate('custom', { custom: e.target.value });
-            if (t) onChange(t);
+            if (t) {
+              setChosen('custom');
+              setCustomError(null);
+              onChange(t);
+            } else setCustomError('pick a day after today.');
           }}
         />
       </label>
+      {customError && <p className="error-note">{customError}</p>}
       {unlockAt != null && (
         <p className="future-note">
-          <Icon name="envelope" size={16} /> sealed until <strong>{formatDate(unlockAt)}</strong>. you won't be able to listen until then.
+          <Icon name="envelope" size={16} />
+          <span>
+            opens <strong>{formatDate(unlockAt)}</strong> at {formatTime(unlockAt)} · {untilText(unlockAt)}. until then you won't be able to listen to it or see
+            its details.
+          </span>
         </p>
       )}
     </div>
