@@ -43,7 +43,7 @@ describe('library search & sort', () => {
     id: 'a',
     status: 'saved',
     title: 'thoughts at 2am',
-    recordedAt: 1000,
+    recordedAt: new Date(2026, 0, 5, 10).getTime(),
     durationMs: 60_000,
     tags: ['night'],
     mood: 'tired',
@@ -53,12 +53,13 @@ describe('library search & sort', () => {
     id: 'b',
     status: 'saved',
     title: 'a day worth remembering',
-    recordedAt: 3000,
+    recordedAt: new Date(2026, 0, 7, 16).getTime(),
     durationMs: 3_600_000,
     description: 'the beach with mom',
     mood: 'happy',
   });
-  const c = newVoicemail({ id: 'c', status: 'saved', title: '', recordedAt: 2000, durationMs: 5_000, lastPlayedAt: 99 });
+  // untitled, so it gets an automatic title from its local time: "a tuesday afternoon"
+  const c = newVoicemail({ id: 'c', status: 'saved', title: '', recordedAt: new Date(2026, 0, 6, 15).getTime(), durationMs: 5_000, lastPlayedAt: 99 });
   const cols: Collection[] = [{ id: 'k', title: 'people i love', description: '', coverId: null, voicemailIds: ['b'], createdAt: 0, updatedAt: 0 }];
   const all = [a, b, c];
 

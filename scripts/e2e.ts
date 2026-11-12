@@ -126,9 +126,13 @@ try {
   // ---------------------------------------------------------------- record + pause + resume
   await page.waitForSelector('.rec-badge', { timeout: 8000 });
   check('recording starts straight away', true);
-  await sleep(1200);
+  // the screen shows "beep…" for about 2 seconds first, so wait for the text instead of guessing a delay
+  const listening = await page
+    .waitForFunction(() => document.body.innerText.toLowerCase().includes("i'm listening"), { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
   await shot('03-recording');
-  check('recording screen says it is listening', (await text()).toLowerCase().includes("i'm listening"));
+  check('recording screen says it is listening', listening);
   await sleep(3500);
   const t1 = await timerSeconds();
   check('timer counts up while recording', t1 >= 4, `${t1}s`);

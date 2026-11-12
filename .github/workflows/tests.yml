@@ -1,0 +1,45 @@
+# Runs every time code is pushed to GitHub (or a pull request is opened).
+# A green check next to a commit means everything below passed.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: type check, unit tests and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    name: end-to-end test in chrome
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:e2e
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+      # keep the screenshots if something fails, so it's easy to see what went wrong
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: e2e-screenshots
+          path: e2e-artifacts/
