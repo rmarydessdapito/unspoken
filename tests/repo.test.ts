@@ -224,3 +224,23 @@ describe('restoring an incomplete backup', () => {
     expect(await (await segmentBlob('s1', 'audio/webm')).text()).toBe('s1-0;s1-1;');
   });
 });
+
+describe('a restore that fails at the last step', () => {
+  it('removes the audio and photos it added, so nothing plays twice', async () => {
+    const { writeBackup, memorySink, importBackup } = await import('../src/lib/backup');
+    await seedRecording('v1', 'saved', [{ id: 's1', chunks: 3 }]);
+    await db.images.put({ id: 'old-photo', blob: new Blob(['p']), createdAt: 1 });
+    const zip = (await writeBackup(memorySink()))!;
+    await db.images.delete('old-photo'); // so the restore has a photo to add
+    const original = db.voicemails.bulkPut.bind(db.voicemails);
+    db.voicemails.bulkPut = (() => Promise.reject(new Error('disk full'))) as typeof db.voicemails.bulkPut;
+    try {
+      await expect(importBackup(zip, () => {})).rejects.toThrow('nothing was changed');
+    } finally {
+      db.voicemails.bulkPut = original;
+    }
+    expect(await db.chunks.count()).toBe(3);
+    expect(await db.images.count()).toBe(0);
+    expect(await (await segmentBlob('s1', 'audio/webm')).text()).toBe('s1-0;s1-1;s1-2;');
+  });
+});
