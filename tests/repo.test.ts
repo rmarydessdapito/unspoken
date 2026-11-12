@@ -233,7 +233,7 @@ describe('a restore that fails at the last step', () => {
     const zip = (await writeBackup(memorySink()))!;
     await db.images.delete('old-photo'); // so the restore has a photo to add
     const original = db.voicemails.bulkPut.bind(db.voicemails);
-    db.voicemails.bulkPut = (() => Promise.reject(new Error('disk full'))) as typeof db.voicemails.bulkPut;
+    db.voicemails.bulkPut = (() => Promise.reject(new Error("disk full"))) as unknown as typeof db.voicemails.bulkPut;
     try {
       await expect(importBackup(zip, () => {})).rejects.toThrow('nothing was changed');
     } finally {
