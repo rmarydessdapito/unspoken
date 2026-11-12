@@ -2,8 +2,6 @@
 
 *for everything left unsaid.*
 
-**Try it here: [project-unspoken.vercel.app](https://project-unspoken.vercel.app)**
-
 ![Screenshots of unspoken](docs/screenshots.png)
 
 ## About the Project
