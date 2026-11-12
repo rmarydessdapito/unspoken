@@ -2607,3 +2607,21 @@ button.link::after,
     display: none;
   }
 }
+
+/* restore preview */
+.restore-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.95rem;
+}
+.restore-choices {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.75rem 0;
+}
+.restore-preview .fine {
+  margin: 0.25rem 0 0.5rem;
+}
