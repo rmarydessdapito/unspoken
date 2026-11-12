@@ -661,9 +661,7 @@ try {
         };
         const w = r.width + reach(-1, 0) + reach(1, 0);
         const h = r.height + reach(0, -1) + reach(0, 1);
-        // the × on a tag can't be 44px wide without overlapping the tag's own word; it is 44px tall and ~32px wide
-        const minW = el.closest('.tag') ? 30 : 42.5;
-        if (w < minW || h < 42.5) small.push(`${el.className || el.tagName} ${Math.round(w)}x${Math.round(h)}`);
+        if (w < 42.5 || h < 42.5) small.push(`${el.className || el.tagName} ${Math.round(w)}x${Math.round(h)}`);
       }
       window.scrollTo(0, 0);
       const vwNow = document.documentElement.clientWidth;

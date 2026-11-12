@@ -2583,14 +2583,15 @@ button.link::after,
   grid-template-columns: minmax(0, 1fr);
 }
 
-/* the little × on a tag: 44px tall, ~32px wide — wider would overlap the tag's own word and the next tag */
+/* the little × on a tag: the icon stays small, the area you can tap is a full 44 × 44.
+   It only overlaps words (which do nothing when tapped), so nothing else gets in its way. */
 .tag button {
   position: relative;
 }
 .tag button::after {
   content: '';
   position: absolute;
-  inset: -12px -8px -12px -4px;
+  inset: -12px; /* 20px icon + 12px each side = 44px */
 }
 /* while the space notice is showing, the (still empty) timer and waveform step aside so the screen stays short */
 .record-center.has-notice .timer,
