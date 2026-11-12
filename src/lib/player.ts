@@ -16,6 +16,8 @@ export interface PlayerSnapshot {
   rate: number;
   loading: boolean;
   error: string | null;
+  /** true when trying again might help (a read or playback hiccup), false when there is simply no audio */
+  canRetry: boolean;
   /** when playing a collection: where we are in it */
   queueIndex: number;
   queueLength: number;
@@ -42,10 +44,13 @@ export class SegmentedPlayer {
     rate: 1,
     loading: false,
     error: null,
+    canRetry: false,
     queueIndex: 0,
     queueLength: 0,
   };
   private queue: Voicemail[] = [];
+  private currentVm: Voicemail | null = null;
+  private ready = false; // false until the first segment's audio is attached
   private artworkUrl: string | null = null;
 
   constructor() {
@@ -60,7 +65,7 @@ export class SegmentedPlayer {
     this.audio.addEventListener('pause', () => this.sync({ playing: false }));
     this.audio.addEventListener('ended', () => this.handleEnded());
     this.audio.addEventListener('error', () => {
-      if (this.snap.voicemailId) this.sync({ error: "this voicemail couldn't be played on this device.", playing: false });
+      if (this.snap.voicemailId) this.sync({ error: "this voicemail couldn't be played on this device.", canRetry: true, playing: false });
     });
   }
 
@@ -134,31 +139,81 @@ export class SegmentedPlayer {
       return seg;
     });
     this.index = 0;
-    this.snap = { ...this.snap, voicemailId: vm.id, playing: false, positionMs: 0, durationMs: vm.durationMs, loading: true, error: null };
+    this.currentVm = vm;
+    this.ready = false;
+    this.snap = { ...this.snap, voicemailId: vm.id, playing: false, positionMs: 0, durationMs: vm.durationMs, loading: true, error: null, canRetry: false };
     this.listeners.forEach((l) => l());
     if (!this.segments.length) {
-      this.sync({ loading: false, error: 'this voicemail has no audio.' });
+      this.sync({ loading: false, error: 'this voicemail has no audio.', canRetry: false });
       return;
     }
-    this.audio.src = await this.urlFor(0);
+    try {
+      this.audio.src = await this.urlFor(0);
+      this.ready = true;
+    } catch {
+      // reading the saved audio failed — nothing was changed, so trying again is safe
+      this.sync({ loading: false, error: "couldn't read this voicemail's audio from your device.", canRetry: true });
+      return;
+    }
     this.audio.playbackRate = this.snap.rate;
     this.sync({ loading: false });
     this.updateMediaMetadata(vm).catch(() => {});
   }
 
   async play() {
-    if (!this.segments.length) return;
+    if (!this.segments.length || !this.ready) return; // keep the real error showing instead of a vaguer one
     if (this.snap.positionMs >= this.snap.durationMs - 50) await this.seek(0);
     try {
       this.audio.playbackRate = this.snap.rate;
       await this.audio.play();
     } catch (err) {
-      if ((err as { name?: string }).name !== 'AbortError') this.sync({ error: 'tap play again to listen.', playing: false });
+      if ((err as { name?: string }).name !== 'AbortError') this.sync({ error: 'tap play again to listen.', canRetry: true, playing: false });
     }
   }
 
   pause() {
     this.audio.pause();
+  }
+
+  /**
+   * Try again after an error: rebuild the audio from what's saved and carry on from where it stopped.
+   * Only reads — the recording and its details are never touched. Returns whether it's playable now.
+   */
+  async retry(): Promise<boolean> {
+    const vm = this.currentVm;
+    if (!vm) return false;
+    const position = this.snap.positionMs;
+    this.audio.pause();
+    this.release();
+    this.snap = { ...this.snap, voicemailId: null };
+    await this.load(vm, true);
+    const ok = !this.snap.error && (await this.waitForReady());
+    if (!ok) {
+      this.sync({ loading: false, error: "still can't play it. your recording is safe and hasn't been changed.", canRetry: true });
+      return false;
+    }
+    this.sync({ error: null });
+    if (position > 0) await this.seek(position);
+    return true;
+  }
+
+  private waitForReady(timeoutMs = 5000): Promise<boolean> {
+    const a = this.audio;
+    if (a.error) return Promise.resolve(false);
+    if (a.readyState >= 1) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const finish = (ok: boolean) => {
+        clearTimeout(timer);
+        a.removeEventListener('loadedmetadata', onOk);
+        a.removeEventListener('error', onBad);
+        resolve(ok);
+      };
+      const onOk = () => finish(true);
+      const onBad = () => finish(false);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      a.addEventListener('loadedmetadata', onOk);
+      a.addEventListener('error', onBad);
+    });
   }
 
   toggle() {
@@ -277,7 +332,8 @@ export class SegmentedPlayer {
     this.audio.load();
     this.release();
     this.queue = [];
-    this.snap = { ...this.snap, voicemailId: null, playing: false, positionMs: 0, durationMs: 0, error: null, queueIndex: 0, queueLength: 0 };
+    this.snap = { ...this.snap, voicemailId: null, playing: false, positionMs: 0, durationMs: 0, error: null, canRetry: false, queueIndex: 0, queueLength: 0 };
+    this.currentVm = null;
     if (navigator.mediaSession) navigator.mediaSession.metadata = null;
     this.listeners.forEach((l) => l());
   }

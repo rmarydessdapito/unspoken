@@ -1,14 +1,15 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { db } from '../db/db';
-import { deleteImage, isLocked, markPlayed, moveToDeleted, restoreDeleted, saveImage, updateVoicemail } from '../db/repo';
+import { deleteImage, hasSavedAudio, isLocked, markPlayed, moveToDeleted, restoreDeleted, saveImage, updateVoicemail } from '../db/repo';
 import { SealedView, UnlockReveal } from '../components/FutureMe';
 import { CollectionPicker } from '../components/CollectionPicker';
 import { Cover } from '../components/Cover';
 import { CoverPicker } from '../components/CoverPicker';
 import { PhotoStrip } from '../components/Fields';
 import { Icon } from '../components/Icon';
+import { PageSkeleton } from '../components/Skeleton';
 import { Confirm, Sheet } from '../components/Sheet';
 import { useToast } from '../components/Toast';
 import { Waveform } from '../components/Waveform';
@@ -40,7 +41,25 @@ export function Detail() {
   const locked = vm ? isLocked(vm, now) : false;
   const current = snap.voicemailId === id;
 
-  if (vm === undefined) return <main className="screen" />;
+  // if playback fails, offer a download only when the audio is really still saved here
+  const [retrying, setRetrying] = useState(false);
+  const [downloadable, setDownloadable] = useState(false);
+  const playbackFailed = current && !!snap.error;
+  useEffect(() => {
+    let live = true;
+    if (!playbackFailed || !vm) {
+      setDownloadable(false);
+      return;
+    }
+    hasSavedAudio(vm)
+      .then((ok) => live && setDownloadable(ok))
+      .catch(() => live && setDownloadable(false));
+    return () => {
+      live = false;
+    };
+  }, [playbackFailed, vm]);
+
+  if (vm === undefined) return <PageSkeleton />;
   if (!vm || vm.status === 'recording') {
     return (
       <main className="screen">
@@ -110,6 +129,15 @@ export function Detail() {
   const skip = async (ms: number) => {
     await ensureLoaded();
     await player.skip(ms);
+  };
+
+  const retryPlayback = async () => {
+    setRetrying(true);
+    try {
+      if (await player.retry()) toast('back on track.');
+    } finally {
+      setRetrying(false);
+    }
   };
 
   const download = async () => {
@@ -219,7 +247,25 @@ export function Detail() {
                 </button>
               ))}
             </div>
-            {current && snap.error && <p className="error-note">{snap.error}</p>}
+            {current && snap.error && (
+              <div className="error-note playback-error" role="alert">
+                <p>{snap.error}</p>
+                {(snap.canRetry || downloadable) && (
+                  <div className="btn-row">
+                    {snap.canRetry && (
+                      <button className="btn btn-gold btn-sm" onClick={retryPlayback} disabled={retrying}>
+                        {retrying ? 'trying…' : 'try again'}
+                      </button>
+                    )}
+                    {downloadable && (
+                      <button className="btn btn-ghost btn-sm" onClick={download}>
+                        download it instead
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
           <div className="action-row">

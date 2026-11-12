@@ -6,6 +6,7 @@ import { createCollection, setSetting } from '../db/repo';
 import { MOODS, type Collection, type CollectionSortKey, type SortKey } from '../db/types';
 import { CollectionCover } from '../components/CollectionCover';
 import { Icon } from '../components/Icon';
+import { LibrarySkeleton } from '../components/Skeleton';
 import { Sheet } from '../components/Sheet';
 import { VoicemailCard, VoicemailRow } from '../components/VoicemailItem';
 import { useSettings } from '../hooks/useSettings';
@@ -32,7 +33,8 @@ export function Library() {
   const tab = params.get('tab') === 'collections' ? 'collections' : 'voicemails';
   const settings = useSettings();
   const saved = useLiveQuery(() => db.voicemails.where('status').equals('saved').toArray(), []);
-  const allCollections = useLiveQuery(() => db.collections.toArray(), []) ?? [];
+  const allCollectionsRaw = useLiveQuery(() => db.collections.toArray(), []);
+  const allCollections = allCollectionsRaw ?? [];
   const collections = useMemo(() => sortCollections(allCollections, settings.collectionSort), [allCollections, settings.collectionSort]);
   const deletedCount = useLiveQuery(() => db.voicemails.where('status').equals('deleted').count(), []) ?? 0;
   // a #tag link opens the library filtered to that tag; otherwise pick up where you left off
@@ -53,8 +55,24 @@ export function Library() {
   const totalMs = (saved ?? []).reduce((a, v) => a + v.durationMs, 0);
   const nFilters = activeFilterCount(filters);
 
+  // tell screen-reader users how many matched — once, after they stop typing, not on every keystroke
+  const [resultNote, setResultNote] = useState('');
+  const resultCount = results.length;
+  const searching = nFilters > 0 || filters.query.trim() !== '';
+  useEffect(() => {
+    if (saved === undefined || !searching) {
+      setResultNote('');
+      return;
+    }
+    const t = setTimeout(() => setResultNote(resultCount ? `${plural(resultCount, 'voicemail')} found.` : 'no voicemails match.'), 700);
+    return () => clearTimeout(t);
+  }, [saved, searching, resultCount]);
+
   return (
     <main className="screen library">
+      <p className="sr-only" role="status">
+        {resultNote}
+      </p>
       <PageHeader title="my unspoken" eyebrow={saved ? `${plural(saved.length, 'voicemail')} · ${formatDuration(totalMs)} of you` : undefined} />
 
       <div className="tabs" role="tablist">
@@ -136,7 +154,9 @@ export function Library() {
             </div>
           )}
 
-          {settings.libraryView === 'grid' ? (
+          {saved === undefined ? (
+            <LibrarySkeleton view={settings.libraryView} />
+          ) : settings.libraryView === 'grid' ? (
             <div className="grid">
               {results.map((vm) => (
                 <VoicemailCard key={vm.id} vm={vm} />
@@ -182,7 +202,7 @@ export function Library() {
               </Link>
             ))}
           </div>
-          {!collections.length && <p className="empty">late night thoughts, people i love, letters to future me… make a home for them.</p>}
+          {allCollectionsRaw !== undefined && !collections.length && <p className="empty">late night thoughts, people i love, letters to future me… make a home for them.</p>}
         </>
       )}
 
