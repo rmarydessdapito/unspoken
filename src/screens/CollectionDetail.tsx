@@ -9,6 +9,7 @@ import { CollectionCover } from '../components/CollectionCover';
 import { player } from '../lib/player';
 import { CoverPicker } from '../components/CoverPicker';
 import { Icon } from '../components/Icon';
+import { PageSkeleton } from '../components/Skeleton';
 import { Confirm, Sheet } from '../components/Sheet';
 import { useToast } from '../components/Toast';
 import { PlayButton, VoicemailRow } from '../components/VoicemailItem';
@@ -43,7 +44,7 @@ export function CollectionDetail() {
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
 
-  if (col === undefined) return <main className="screen" />;
+  if (col === undefined) return <PageSkeleton />;
   if (!col) {
     return (
       <main className="screen">

@@ -6,6 +6,7 @@ import { deleteImage, isLocked, moveToDeleted, saveImage, updateVoicemail } from
 import type { Voicemail } from '../db/types';
 import { Cover } from '../components/Cover';
 import { Icon } from '../components/Icon';
+import { PageSkeleton } from '../components/Skeleton';
 import { CoverPicker, PhotoAdder } from '../components/CoverPicker';
 import { FutureMePicker, MoodPicker, PhotoStrip, TagInput } from '../components/Fields';
 import { Confirm, Sheet } from '../components/Sheet';
@@ -43,7 +44,7 @@ export function Customize() {
     }
   }, [vm, form]);
 
-  if (vm === undefined && form === null) return <main className="screen" />;
+  if (vm === undefined && form === null) return <PageSkeleton />;
   if (!vm || !form || vm.status === 'deleted') {
     return (
       <main className="screen">

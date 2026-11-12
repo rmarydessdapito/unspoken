@@ -57,6 +57,15 @@ export async function segmentBlob(segmentId: string, mimeType: string): Promise<
   );
 }
 
+/** True when every part of a voicemail still has saved audio — the test for offering a download after playback fails. */
+export async function hasSavedAudio(vm: Pick<Voicemail, 'segments'>): Promise<boolean> {
+  if (!vm.segments.length) return false;
+  for (const seg of vm.segments) {
+    if ((await db.chunks.where('segmentId').equals(seg.id).count()) === 0) return false;
+  }
+  return true;
+}
+
 /**
  * Recompute a voicemail's duration, segments and peaks from its chunks.
  * Used when finishing, and when recovering a recording interrupted by a crash or closed tab.
