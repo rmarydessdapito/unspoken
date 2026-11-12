@@ -106,6 +106,7 @@ describe('recording write failures', () => {
     const err = await rec.finish().catch((e) => e);
     expect(err).toBeInstanceOf(IncompleteRecordingError);
     expect(err.storedMs).toBeGreaterThan(0);
+    expect(err.phase).toBe('final');
     const vm = await db.voicemails.get(id);
     expect(vm?.status).toBe('draft'); // recoverable, not 'saved'
     expect(await db.chunks.where('voicemailId').equals(id).count()).toBe(3);

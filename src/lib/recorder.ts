@@ -37,6 +37,8 @@ export class IncompleteRecordingError extends Error {
     public quota: boolean,
     /** true when nothing at all could be kept */
     public empty = false,
+    /** 'recording': audio stopped being stored. 'final': everything was stored but the last save step failed. */
+    public phase: 'recording' | 'final' = 'recording',
   ) {
     super(message);
     this.name = 'IncompleteRecordingError';
@@ -417,7 +419,7 @@ export class VoicemailRecorder {
     } catch {
       /* still status 'recording' in the database: boot recovery makes it a draft */
     }
-    return new IncompleteRecordingError("i couldn't finish saving this one, but the audio is safe as an unfinished thought.", stored, quota);
+    return new IncompleteRecordingError("i couldn't finish saving this one, but the audio is safe as an unfinished thought.", stored, quota, false, 'final');
   }
 
   /** Keep it as an unfinished thought to continue later. */

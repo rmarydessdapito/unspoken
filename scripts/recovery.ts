@@ -5,9 +5,10 @@
  *
  *  1. Chrome is killed outright (SIGKILL — no warning, no cleanup) in the middle of a recording, then relaunched
  *     on the same profile: the recording must come back as an unfinished thought, with its audio playable.
- *  2. The device runs out of space part-way through a recording (storage writes start failing).
- *  3. A single audio write fails and then storage recovers.
- *  4. The final "mark as saved" write fails.
+ *  2. The device runs out of space part-way through a recording (every later write fails, retries included),
+ *     while an earlier voicemail exists: it must stay saved and playable.
+ *  3. A single audio write fails and the automatic retry succeeds: no gap.
+ *  4. The final "mark as saved" write fails: reported plainly, recovered at next launch.
  *
  * Checks (✓) are things that must always hold. Notes (·) describe what was observed, so behaviour is on the record.
  */
@@ -194,38 +195,58 @@ try {
     await browser.close();
   }
 
-  // ================================================================ 2. the device runs out of space part-way through
+  // a finished voicemail to protect: every failure scenario below runs *after* this one exists
+  const recordPrevious = async (page: Page): Promise<string> => {
+    await page.goto(`${BASE}/record?start=1`, { waitUntil: 'networkidle0' });
+    await page.waitForSelector('.rec-badge', { timeout: 8000 });
+    await sleep(5000);
+    await clickText(page, 'finish', '.ctrl');
+    await page.waitForFunction(() => location.pathname.includes('/customize'), { timeout: 8000 });
+    const done = (await readState(page)).find((v: any) => v.status === 'saved');
+    if (!done) throw new Error('the earlier recording was not saved');
+    return done.id;
+  };
+  const screenText = async (page: Page) => (await page.evaluate(() => document.body.innerText)).replace(/\s+/g, ' ');
+  const incompletePanel = (page: Page) => page.$eval('[data-testid="incomplete-recording"]', (e) => (e as HTMLElement).innerText.replace(/\s+/g, ' ')).catch(() => null);
+
+  // ================================================================ 2. the device runs out of space part-way through (every later write fails)
   {
     const browser = await launch(freshProfile());
     const page = await browser.newPage();
     await injectFaults(page);
     await page.goto(BASE, { waitUntil: 'networkidle0' });
     await markOnboarded(page);
-    await page.evaluate(() => {
-      sessionStorage.setItem('failChunksAfter', '2'); // the first two chunks (≈4s) save, then every write fails
-    });
+    const previousId = await recordPrevious(page);
+    const before = (await readState(page)).find((v: any) => v.id === previousId);
+    await page.evaluate(() => sessionStorage.setItem('failChunksAfter', '2')); // two chunks (≈4s) save, then every write fails, retries included
     await page.goto(`${BASE}/record?start=1`, { waitUntil: 'networkidle0' });
     await page.waitForSelector('.rec-badge', { timeout: 8000 });
-    await sleep(12000);
-    const seen = (await page.evaluate(() => (window as any).__toasts as string[])) ?? [];
-    const quotaToasts = seen.filter((t) => t.includes('running out of space')).length;
-    note(`while space ran out the person saw ${quotaToasts} warning(s): "${seen.find((t) => t.includes('running out of space')) ?? '(none)'}"`);
-    check('running out of space is announced while recording', quotaToasts >= 1);
-    const timerAt = await timerSeconds(page);
-    note(`the timer kept running to ${timerAt}s even though only the first ~4s could be written`);
-    await clickText(page, 'finish', '.ctrl');
-    await sleep(3500);
-    const after = await page.evaluate(() => document.body.innerText);
+    await page.waitForSelector('[data-testid="incomplete-recording"]', { timeout: 15000 });
+    await sleep(5000); // keep "talking": nothing more should be said, stored, or warned about
+    const panel = (await incompletePanel(page)) ?? '';
+    note(`the person saw: "${panel}"`);
+    const toasts = ((await page.evaluate(() => (window as any).__toasts as string[])) ?? []).filter((t) => /space|trouble|saving/.test(t));
+    check('running out of space is explained once, on screen', /stopped at \d\d:\d\d because your device ran out of space/.test(panel));
+    check('…it says the audio is kept as an unfinished thought, and that it is not a finished voicemail', panel.includes('unfinished thoughts') && panel.includes("isn't a finished voicemail"));
+    check('…with no repeated warning toasts', toasts.length === 0, `${toasts.length} toast(s)`);
+    check('…and no success message', !(await screenText(page)).includes('you got it out.'));
+    check('…and the recording controls are gone, so nothing more is "recorded" into the void', (await page.$$('.ctrl')).length === 0);
     const state = await readState(page);
-    const vm = state[0];
-    note(`after tapping finish the screen said: ${after.includes('you got it out.') ? '"you got it out." (kept)' : after.replace(/\s+/g, ' ').slice(0, 140)}`);
-    check('what had been written is kept, never silently dropped', !!vm && vm.chunkCount >= 2, `status "${vm?.status}", ${vm?.chunkCount} chunks, ${(vm?.durationMs ?? 0) / 1000}s stored`);
-    check('the stored duration matches the audio actually kept (no phantom minutes)', !!vm && vm.decodedMs != null && Math.abs(vm.decodedMs - vm.durationMs) < 2500, `${vm?.durationMs}ms stored vs ${vm?.decodedMs}ms decoded`);
-    note(`timer showed ${timerAt}s, but only ${(vm.durationMs / 1000).toFixed(1)}s of audio was actually stored`);
+    const vm = state.find((v: any) => v.id !== previousId);
+    check('everything stored before the failure is kept', !!vm && vm.chunkCount === 2, `${vm?.chunkCount} chunks, ${((vm?.durationMs ?? 0) / 1000).toFixed(1)}s`);
+    check('…with no gaps and nothing stored after the failure', !!vm && vm.seqs.join() === '0,1', `seqs [${vm?.seqs.join(', ')}]`);
+    check('…marked as an unfinished thought, never as saved', !!vm && vm.status === 'draft', `status "${vm?.status}"`);
+    check('the recovered duration is exactly what was stored (no phantom time)', !!vm && vm.decodedMs != null && Math.abs(vm.decodedMs - vm.durationMs) < 2500, `${vm?.durationMs}ms stored vs ${vm?.decodedMs}ms decoded`);
+    const stoppedEarly = await idbRun(page, async (idb, id, wrap) => (await wrap(idb.transaction('voicemails').objectStore('voicemails').get(id))).stoppedEarly, vm?.id);
+    check('…and flagged as stopped early, so the draft says so', stoppedEarly?.reason === 'storage', JSON.stringify(stoppedEarly));
+    const after = state.find((v: any) => v.id === previousId);
+    check('the earlier voicemail is untouched and still plays', !!after && after.status === 'saved' && after.chunkCount === before.chunkCount && after.decodedMs === before.decodedMs, `${after?.chunkCount} chunks, ${after?.decodedMs}ms`);
+    await page.goto(`${BASE}/drafts`, { waitUntil: 'networkidle0' });
+    check('the draft list says it stopped early', (await screenText(page)).includes('stopped early'));
     await browser.close();
   }
 
-  // ================================================================ 3. one write fails, then storage recovers
+  // ================================================================ 3. a single write fails, then storage recovers
   {
     const browser = await launch(freshProfile());
     const page = await browser.newPage();
@@ -233,21 +254,20 @@ try {
     await page.goto(BASE, { waitUntil: 'networkidle0' });
     await markOnboarded(page);
     await page.evaluate(() => {
-      sessionStorage.setItem('failChunksAfter', '2'); // chunk #3 fails…
-      sessionStorage.setItem('failChunksCount', '1'); // …and only that one
+      sessionStorage.setItem('failChunksAfter', '2'); // chunk #3 fails once…
+      sessionStorage.setItem('failChunksCount', '1'); // …and the automatic retry succeeds
     });
     await page.goto(`${BASE}/record?start=1`, { waitUntil: 'networkidle0' });
     await page.waitForSelector('.rec-badge', { timeout: 8000 });
     await sleep(11000);
+    check('one failed write does not interrupt the recording', !(await incompletePanel(page)));
     await clickText(page, 'finish', '.ctrl');
     await sleep(3000);
-    const state = await readState(page);
-    const vm = state[0];
-    const gaps = vm.seqs.some((s: number, i: number) => i > 0 && s !== vm.seqs[i - 1] + 1);
-    note(`chunk sequence kept: [${vm.seqs.join(', ')}]${gaps ? '  ← a gap where one write failed' : ''}`);
-    note(`stored duration ${vm.durationMs}ms; audio decodes to ${vm.decodedMs === null ? 'NOTHING (cannot be decoded)' : vm.decodedMs + 'ms'}`);
-    check('after a single failed write the voicemail is still saved', vm.status === 'saved' && vm.chunkCount >= 3);
-    check('…and its audio still decodes', vm.decodedMs !== null);
+    const vm = (await readState(page))[0];
+    note(`chunk sequence kept: [${vm.seqs.join(', ')}]; stored ${vm.durationMs}ms; decodes to ${vm.decodedMs}ms`);
+    check('the retry stored it: no gap in the audio', vm.seqs.every((q: number, i: number) => q === i), `[${vm.seqs.join(', ')}]`);
+    check('…and the voicemail is saved normally', vm.status === 'saved' && vm.chunkCount >= 4);
+    check('…with audio that decodes, matching the stored duration', vm.decodedMs !== null && Math.abs(vm.decodedMs - vm.durationMs) < 2500);
     await browser.close();
   }
 
@@ -264,16 +284,16 @@ try {
     await sleep(7000);
     await page.evaluate(() => sessionStorage.setItem('failVoicemailWrites', '1'));
     await clickText(page, 'finish', '.ctrl');
-    await sleep(3500);
-    const screen = (await page.evaluate(() => document.body.innerText)).replace(/\s+/g, ' ');
-    const toasts = ((await page.evaluate(() => (window as any).__toasts as string[])) ?? []).join(' | ');
-    note(`when saving failed the screen/toasts said: ${screen.includes('you got it out.') ? '"you got it out."' : `${toasts || screen.slice(0, 120)}`}`);
+    await page.waitForSelector('[data-testid="incomplete-recording"]', { timeout: 8000 });
+    const panel = (await incompletePanel(page)) ?? '';
+    note(`when saving failed the person saw: "${panel}"`);
+    check('a failed final save is explained in plain words, not as an error code', panel.includes("couldn't finish saving") && panel.includes('safe in unfinished thoughts'));
+    check('…and is never reported as success', !(await screenText(page)).includes('you got it out.') && !page.url().includes('/customize'));
     await page.evaluate(() => sessionStorage.removeItem('failVoicemailWrites'));
     await page.goto(BASE, { waitUntil: 'networkidle0' }); // the next launch
     await sleep(1500);
-    const state = await readState(page);
-    const vm = state[0];
-    check('if the final save is interrupted, the next launch still recovers the recording', !!vm && vm.status !== 'recording' && vm.chunkCount >= 2, `status "${vm?.status}", ${vm?.chunkCount} chunks`);
+    const vm = (await readState(page))[0];
+    check('the recording is recovered on the next launch', !!vm && vm.status !== 'recording' && vm.chunkCount >= 2, `status "${vm?.status}", ${vm?.chunkCount} chunks`);
     check('…with its audio intact', !!vm && vm.decodedMs !== null);
     await browser.close();
   }
