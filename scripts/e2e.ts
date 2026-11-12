@@ -643,6 +643,103 @@ try {
   await sleep(300);
   check('Escape closes it', !(await page.$('.sheet')));
 
+  // ---------------------------------------------------------------- regression sweep: navigation, filters, echoes, empty states, reopening
+  // every screen opens, and nothing throws
+  const errorsBefore = errors.length;
+  for (const [path, needle] of [['/', 'unspoken'], ['/library', 'my unspoken'], ['/library?tab=collections', 'late night thoughts'], ['/drafts', 'unfinished'], ['/deleted', 'recently deleted'], ['/echoes', 'echo'], ['/you', 'backup']] as const) {
+    await go(path);
+    check(`navigation: ${path} opens`, (await text()).toLowerCase().includes(needle), needle);
+  }
+  check('…without page errors', errors.length === errorsBefore);
+  await go('/this-page-does-not-exist');
+  check('an unknown address quietly returns home', new URL(page.url()).pathname === '/');
+  await go('/collection/not-a-real-collection');
+  await page.waitForFunction(() => /exist anymore/.test(document.body.innerText), { timeout: 5000 }).catch(() => {});
+  check('a collection that no longer exists says so', /exist anymore/.test(await text()), (await text()).slice(0, 120).replace(/\n/g, ' | '));
+  await go('/voicemail/not-a-real-voicemail');
+  await page.waitForFunction(() => !document.body.innerText.includes('loading…'), { timeout: 5000 }).catch(() => {});
+  check('a voicemail that no longer exists is explained, not left loading', !(await text()).includes('loading…'), (await text()).slice(0, 100).replace(/\n/g, ' | '));
+  await go('/library');
+  await page.goBack();
+  await sleep(300);
+  check('the back button returns to the previous screen', new URL(page.url()).pathname === '/voicemail/not-a-real-voicemail', new URL(page.url()).pathname);
+
+  // search and filters in the real screen
+  await go('/library');
+  await page.type('input[aria-label="search voicemails"]', 'zzzqqq');
+  await sleep(400);
+  check('search with no match explains itself', (await text()).includes('nothing matches “zzzqqq”'));
+  await page.focus('input[aria-label="search voicemails"]');
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Backspace');
+  await sleep(300);
+  const withMood = await dbQuery((v) => v.find((x) => x.mood && x.status === 'saved'));
+  if (withMood) {
+    await page.click('[aria-label="filters"]');
+    await page.waitForSelector('.sheet');
+    await clickText(withMood.mood, '.sheet .chip');
+    await page.keyboard.press('Escape');
+    await sleep(400);
+    check('filtering by mood keeps matching voicemails', (await text()).includes(withMood.title || ''));
+    check('…and shows the filter is on', !!(await page.$('[aria-label="filters"].has-badge')));
+    await page.click('[aria-label="filters"]');
+    await page.waitForSelector('.sheet');
+    await clickText(withMood.mood, '.sheet .chip');
+    await page.keyboard.press('Escape');
+    await sleep(300);
+    check('…and turns off again', !(await page.$('[aria-label="filters"].has-badge')));
+  }
+
+  // little echoes: an old voicemail comes back, can be skipped for today, and the skip survives a reload
+  const oldId = 'e2e-old-thought';
+  await idbRun(
+    async (idb, id, wrap) => {
+      const long = Date.now() - 400 * 86_400_000;
+      const base = { id, status: 'saved', createdAt: long, recordedAt: long, updatedAt: long, title: 'an old thought', description: '', mood: null, tags: [], coverId: null, photoIds: [], durationMs: 4000, segments: [], peaks: [], transcript: '', transcriptVisible: true, prompt: null, unlockAt: null, unlockSeen: false, lastPlayedAt: null, playCount: 0 };
+      await wrap(idb.transaction('voicemails', 'readwrite').objectStore('voicemails').put(base));
+    },
+    oldId,
+  );
+  await setting('echoFrequency', 'daily');
+  await unsetting('echoToday');
+  await go('/echoes');
+  check('an old voicemail resurfaces as an echo', !!(await page.$('.echo-card')) && (await text()).includes('an old thought'), (await text()).slice(0, 160).replace(/\n/g, ' | '));
+  await clickText('not today');
+  await page.waitForFunction(() => document.body.innerText.includes('another day'), { timeout: 5000 });
+  check('"not today" puts it away for the day', !(await page.$('.echo-card')));
+  await go('/echoes');
+  check('…and it stays put after reopening the app', !(await page.$('.echo-card')) && (await text()).includes('another day'));
+  await setting('echoFrequency', 'off');
+  await go('/echoes');
+  check('echoes turned off is explained, with a way back', (await text()).includes('echoes are turned off') && (await text()).includes('turn echoes back on'));
+  await setting('echoFrequency', 'daily');
+  await unsetting('echoToday');
+  await idbRun(async (idb, id, wrap) => wrap(idb.transaction('voicemails', 'readwrite').objectStore('voicemails').delete(id)), oldId);
+
+  // state kept after closing and reopening
+  await go('/library?tab=collections');
+  check('collections survive reopening the app', (await text()).includes('late night thoughts'));
+  await go('/you');
+  check('settings survive reopening the app', (await text()).includes('backup'));
+
+  // the restore sheet on the smallest phone
+  await page.setViewport({ width: 320, height: 640, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  await go('/you');
+  await (await page.$('input[type="file"]'))!.uploadFile(`${dl}/${zips[0]}`);
+  await page.waitForSelector('.restore-list', { timeout: 15_000 });
+  const sheetFit = await page.evaluate(() => {
+    const sheet = document.querySelector('.sheet') as HTMLElement;
+    const r = sheet.getBoundingClientRect();
+    const wide = [...sheet.querySelectorAll<HTMLElement>('*')].filter((e) => e.getBoundingClientRect().right > document.documentElement.clientWidth + 1).length;
+    return { wide, sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth, scrolls: sheet.scrollHeight >= sheet.clientHeight, right: Math.round(r.right) };
+  });
+  check('320px restore preview: nothing spills sideways', sheetFit.wide === 0 && sheetFit.sideways <= 0, JSON.stringify(sheetFit));
+  await page.keyboard.press('Escape');
+  await page.setViewport({ width: vw, height: vh, deviceScaleFactor: vw > 800 ? 1 : 2 });
+  await go('/');
+
   // ---- the smallest phones: nothing sideways, everything tappable
   await page.setViewport({ width: 320, height: 640, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   for (const path of ['/', '/library', '/library?tab=collections', '/echoes', '/you', '/record', `/voicemail/${target.id}`, `/voicemail/${target.id}/customize`]) {
