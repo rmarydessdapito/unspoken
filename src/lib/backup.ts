@@ -30,7 +30,7 @@ interface Manifest {
   images: (Omit<StoredImage, 'blob'> & { file: string; type: string })[];
 }
 
-export type Sink = { write(data: Uint8Array): Promise<void>; close(): Promise<Blob | null> };
+export type Sink = { write(data: Uint8Array): Promise<void>; close(): Promise<Blob | null>; abort?(): Promise<void> };
 
 async function makeSink(filename: string): Promise<Sink> {
   const picker = (globalThis as unknown as { showSaveFilePicker?: (o: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker;
@@ -44,6 +44,8 @@ async function makeSink(filename: string): Promise<Sink> {
           await writable.close();
           return null;
         },
+        // a failed backup must not leave a half-written file where the person chose to save it
+        abort: () => writable.abort().catch(() => {}),
       };
     } catch (err) {
       if ((err as { name?: string }).name === 'AbortError') throw err;
@@ -80,7 +82,13 @@ export async function exportBackup(onProgress: (p: BackupProgress) => void): Pro
   const date = new Date().toISOString().slice(0, 10);
   const filename = `unspoken-backup-${date}.zip`;
   const sink = await makeSink(filename);
-  const blob = await writeBackup(sink, onProgress);
+  let blob: Blob | null;
+  try {
+    blob = await writeBackup(sink, onProgress);
+  } catch (err) {
+    await sink.abort?.();
+    throw err;
+  }
   if (blob) downloadBlob(blob, filename);
   await db.settings.put({ key: 'lastBackupAt', value: Date.now() });
   return true;
@@ -168,6 +176,7 @@ export async function importBackup(file: Blob, onProgress: (p: BackupProgress) =
   let imageMeta = new Map<string, Manifest['images'][number]>();
   let oldChunkKeys: number[] = [];
   const addedChunkKeys: number[] = [];
+  const addedImageIds: string[] = []; // only photos that weren't here before, so a failed restore can remove exactly those
   let writes: Promise<unknown> = Promise.resolve();
   let total = 1;
   let done = 0;
@@ -182,6 +191,7 @@ export async function importBackup(file: Blob, onProgress: (p: BackupProgress) =
     }
     const i = imageMeta.get(name);
     if (i) {
+      if (!(await db.images.get(i.id))) addedImageIds.push(i.id);
       await db.images.put({ id: i.id, createdAt: i.createdAt, blob: new Blob([data as BlobPart], { type: i.type }) });
       onProgress({ done: ++done, total, label: 'putting your photos back' });
     }
@@ -205,6 +215,11 @@ export async function importBackup(file: Blob, onProgress: (p: BackupProgress) =
       .primaryKeys()) as number[];
     for (const [name, data] of waiting) await save(name, data);
     waiting.clear();
+  };
+
+  const undoRestore = async () => {
+    await db.chunks.bulkDelete(addedChunkKeys).catch(() => {});
+    await db.images.bulkDelete(addedImageIds).catch(() => {});
   };
 
   try {
@@ -259,16 +274,22 @@ export async function importBackup(file: Blob, onProgress: (p: BackupProgress) =
     if (addedChunkKeys.length < (manifest as Manifest).chunks.length) throw new Error('incomplete backup');
   } catch (err) {
     // undo a half-finished restore: drop what we added, keep what was there
-    await db.chunks.bulkDelete(addedChunkKeys);
+    await undoRestore();
     throw err instanceof Error && err.message.includes('unspoken backup') ? err : new Error("that backup couldn't be restored. nothing was changed.");
   }
 
   const m = manifest as Manifest;
-  await db.transaction('rw', [db.chunks, db.voicemails, db.collections, db.settings], async () => {
-    await db.chunks.bulkDelete(oldChunkKeys);
-    await db.voicemails.bulkPut(m.voicemails.map((v) => (v.status === 'recording' ? { ...v, status: 'draft' as const } : v)));
-    await db.collections.bulkPut(m.collections);
-    await db.settings.bulkPut(m.settings.filter((s) => !EXCLUDED_SETTINGS.has(s.key)));
-  });
+  try {
+    await db.transaction('rw', [db.chunks, db.voicemails, db.collections, db.settings], async () => {
+      await db.chunks.bulkDelete(oldChunkKeys);
+      await db.voicemails.bulkPut(m.voicemails.map((v) => (v.status === 'recording' ? { ...v, status: 'draft' as const } : v)));
+      await db.collections.bulkPut(m.collections);
+      await db.settings.bulkPut(m.settings.filter((s) => !EXCLUDED_SETTINGS.has(s.key)));
+    });
+  } catch {
+    // the transaction rolled back, so the old audio is intact; remove the copy we added so nothing plays twice
+    await undoRestore();
+    throw new Error("that backup couldn't be restored. nothing was changed.");
+  }
   return { voicemails: m.voicemails.length };
 }
