@@ -5,11 +5,12 @@ import { db, requestPersistentStorage } from '../db/db';
 import { setSetting, wipeEverything } from '../db/repo';
 import type { EchoFrequency } from '../db/types';
 import { Icon } from '../components/Icon';
-import { Confirm, Sheet } from '../components/Sheet';
+import { Sheet } from '../components/Sheet';
 import { useToast } from '../components/Toast';
 import { useLock } from '../components/LockGate';
 import { useSettings } from '../hooks/useSettings';
-import { exportBackup, importBackup, type BackupProgress } from '../lib/backup';
+import { exportBackup, type BackupProgress, type RestoreSummary } from '../lib/backup';
+import { RestorePreview } from '../components/RestorePreview';
 import { formatBytes, formatDate, greeting } from '../lib/format';
 import { ECHO_FREQUENCY_LABELS } from '../lib/library';
 import { biometricAvailable, hashPasscode, registerBiometric, verifyPasscode } from '../lib/lock';
@@ -118,18 +119,13 @@ export function You() {
     }
   };
 
-  const runRestore = async (file: File) => {
-    setBackupError(null);
-    setProgress({ done: 0, total: file.size, label: 'opening your backup' });
-    try {
-      const r = await importBackup(file, setProgress);
-      toast(`restored ${r.voicemails} voicemails.`);
-      setStorage(await measureStorage());
-    } catch (err) {
-      setBackupError((err as Error).message || "that backup couldn't be restored. nothing was changed.");
-    } finally {
-      setProgress(null);
+  const restored = async (r: RestoreSummary | null) => {
+    setRestoreFile(null);
+    if (r) {
+      const parts = [r.added && `${r.added} added`, r.recovered && `${r.recovered} recovered`, r.replaced && `${r.replaced} updated`].filter(Boolean);
+      toast(parts.length ? `restored: ${parts.join(', ')}.` : 'everything was already here.');
     }
+    setStorage(await measureStorage());
   };
 
   const closePin = () => {
@@ -495,14 +491,7 @@ export function You() {
         </form>
       </Sheet>
 
-      <Confirm
-        open={!!restoreFile}
-        onClose={() => setRestoreFile(null)}
-        title="restore this backup?"
-        body="voicemails, photos and collections from the backup are added back. if a voicemail is both here and in the backup, the backup's version is kept. nothing else is removed."
-        confirmLabel="restore"
-        onConfirm={() => restoreFile && runRestore(restoreFile)}
-      />
+      <RestorePreview file={restoreFile} onClose={() => setRestoreFile(null)} onDone={restored} />
 
       <Sheet open={wipeOpen} onClose={() => setWipeOpen(false)} title="delete everything?">
         <p className="muted sheet-body">
