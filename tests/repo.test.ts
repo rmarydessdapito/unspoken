@@ -244,3 +244,18 @@ describe('a restore that fails at the last step', () => {
     expect(await (await segmentBlob('s1', 'audio/webm')).text()).toBe('s1-0;s1-1;s1-2;');
   });
 });
+
+describe('restoring next to existing data', () => {
+  it('keeps voicemails, audio and photos that are not in the backup', async () => {
+    const { writeBackup, memorySink, importBackup } = await import('../src/lib/backup');
+    await seedRecording('in-backup', 'saved', [{ id: 's1', chunks: 2 }]);
+    const zip = (await writeBackup(memorySink()))!;
+    await seedRecording('made-later', 'saved', [{ id: 's2', chunks: 3 }]);
+    const photo = await saveImage(new Blob(['later-photo'], { type: 'image/jpeg' }));
+    await importBackup(zip, () => {});
+    expect(await db.voicemails.get('made-later')).toBeTruthy();
+    expect(await (await segmentBlob('s2', 'audio/webm')).text()).toBe('s2-0;s2-1;s2-2;');
+    expect(await (await db.images.get(photo))!.blob.text()).toBe('later-photo');
+    expect(await db.chunks.count()).toBe(5); // 2 restored + 3 untouched, nothing doubled
+  });
+});
