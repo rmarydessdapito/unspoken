@@ -28,7 +28,7 @@ export function Detail() {
   const nav = useNavigate();
   const toast = useToast();
   const now = useNow(30_000);
-  const vm = useLiveQuery(() => db.voicemails.get(id), [id]);
+  const vm = useLiveQuery(async () => (await db.voicemails.get(id)) ?? null, [id]); // null = not found (undefined = still loading)
   const collections = useLiveQuery(() => db.collections.where('voicemailIds').equals(id).toArray(), [id]) ?? [];
   const snap = usePlayer();
   const [confirmDelete, setConfirmDelete] = useState(false);
