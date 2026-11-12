@@ -153,7 +153,8 @@ img {
   text-align: center;
 }
 .link {
-  color: var(--gold);
+  /* cream text with a gold underline: reads clearly at small sizes (gold text alone is too low-contrast) */
+  color: var(--cream);
   text-decoration: underline;
   text-underline-offset: 3px;
   text-decoration-color: var(--gold-40);
@@ -1178,7 +1179,7 @@ img {
   transition: border-color 0.2s;
 }
 .input::placeholder {
-  color: var(--cream-40);
+  color: var(--cream-60);
 }
 .input:focus {
   border-color: var(--gold);
@@ -1307,7 +1308,7 @@ input[type='time'].input {
   padding: 0.3rem;
 }
 .tag-input::placeholder {
-  color: var(--cream-40);
+  color: var(--cream-60);
 }
 .future-me .chips {
   margin-bottom: 0.25rem;
@@ -1588,7 +1589,7 @@ input[type='range'] {
   color: var(--cream);
 }
 .search input::placeholder {
-  color: var(--cream-40);
+  color: var(--cream-60);
 }
 .sort-row {
   display: flex;
@@ -1747,7 +1748,7 @@ input[type='range'] {
 }
 .colophon {
   text-align: center;
-  color: var(--cream-40);
+  color: var(--cream-60);
   font-size: 0.8rem;
   margin-top: 2rem;
 }
@@ -2221,11 +2222,181 @@ input[type='range'] {
     align-items: flex-start;
     padding: 0 0.5rem;
     font-size: 0.75rem;
-    color: var(--cream-40);
+    color: var(--cream-60);
     line-height: 1.5;
   }
   .side-foot svg {
     flex-shrink: 0;
     margin-top: 2px;
+  }
+}
+
+/* collection cover made of the voicemails inside it */
+.cover-mosaic {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+  background: var(--charcoal);
+}
+.cover-mosaic > img,
+.cover-mosaic > .cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  min-width: 0;
+}
+.cover-mosaic .mosaic-gen {
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* ---------------------------------------------------------------- refinements (v1.1) */
+
+.link {
+  text-decoration-color: var(--gold);
+  text-decoration-thickness: 1px;
+}
+.toolbar {
+  min-width: 0;
+}
+.search {
+  min-width: 0;
+}
+@media (max-width: 360px) {
+  .toolbar .icon-btn {
+    width: 38px;
+  }
+  .search {
+    padding: 0 0.7rem;
+  }
+}
+.toggle-row.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.storage-status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.center-row {
+  justify-content: center;
+}
+.record-error {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  max-width: 420px;
+}
+.record-error p {
+  margin: 0;
+}
+.lock-forgot {
+  max-width: 320px;
+  text-align: center;
+  margin-top: 1rem;
+}
+
+/* sealing & opening future-me voicemails */
+.seal-preview {
+  display: grid;
+  justify-items: center;
+  gap: 0.25rem;
+  padding: 1rem 0 1.25rem;
+  color: var(--gold);
+}
+.seal-date {
+  font-size: 1.8rem;
+  margin: 0.25rem 0 0;
+  color: var(--cream);
+}
+.sealed-envelope .btn-row {
+  margin-top: 0.5rem;
+}
+.unlock-reveal {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 0.85rem;
+  padding: 3rem 1rem;
+  max-width: 520px;
+  margin: 0 auto;
+}
+.reveal-envelope {
+  width: 120px;
+  height: 120px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--gold);
+  border: 1px solid var(--gold-40);
+  background: radial-gradient(circle, rgba(177, 129, 24, 0.18), transparent 70%);
+  animation: breathe 3.6s ease-in-out infinite;
+}
+.reveal-title {
+  font-size: clamp(1.8rem, 7vw, 2.4rem);
+  line-height: 1.15;
+  margin: 0;
+  font-weight: 500;
+}
+
+/* recently deleted */
+.deleted-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 2rem;
+  color: var(--cream-60);
+}
+.deleted-row {
+  flex-wrap: wrap;
+}
+.empty-bin {
+  margin-top: 1.5rem;
+}
+
+/* echoes & collections */
+.echo-frequency {
+  margin: -0.25rem 0 1rem;
+}
+.echo-never {
+  margin-top: 0.75rem;
+  color: var(--cream-60);
+}
+.echo-empty .btn {
+  margin-top: 0.5rem;
+}
+.echo-history-row {
+  display: grid;
+  gap: 0.1rem;
+  padding-top: 0.4rem;
+}
+.echo-history-row .eyebrow {
+  padding-left: 0.6rem;
+}
+.echo-footnote {
+  margin-top: 2rem;
+  text-align: center;
+}
+.collection-actions {
+  margin: 1.25rem 0 0;
+}
+@media (min-width: 768px) {
+  .echo-card {
+    grid-template-areas:
+      'cover eyebrow'
+      'cover title'
+      'cover date'
+      'cover actions'
+      'cover never';
+    grid-template-rows: auto auto auto auto 1fr;
+  }
+  .echo-never {
+    grid-area: never;
+    align-self: start;
+  }
+  .split .collection-actions {
+    justify-content: flex-start;
   }
 }

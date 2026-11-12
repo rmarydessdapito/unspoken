@@ -15,6 +15,8 @@ import { newVoicemail, rebuildFromChunks, updateVoicemail } from '../db/repo';
 
 export const CHUNK_MS = 2000;
 export const PEAKS_PER_SECOND = 10;
+/** Recordings shorter than this are treated as accidental taps, not kept. */
+export const MIN_KEEP_MS = 1000;
 
 export type RecorderState = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping' | 'stopped';
 
@@ -43,10 +45,23 @@ export function recordingSupported(): boolean {
   return typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
 }
 
+/** 'granted' | 'denied' | 'prompt', or null when the browser can't tell us ahead of time (e.g. older Safari). */
+export async function micPermission(): Promise<PermissionState | null> {
+  try {
+    return (await navigator.permissions.query({ name: 'microphone' as PermissionName })).state;
+  } catch {
+    return null;
+  }
+}
+
 export function describeMicError(err: unknown): string {
   const name = (err as { name?: string })?.name;
-  if (name === 'NotAllowedError' || name === 'SecurityError')
-    return "unspoken needs your microphone to listen. you can allow it in your browser's site settings.";
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    return ios
+      ? 'unspoken needs your microphone to listen. open settings → safari → microphone (or tap “aA” in the address bar → website settings) and allow it, then try again.'
+      : 'unspoken needs your microphone to listen. tap the lock or settings icon next to the address bar, allow the microphone, then try again.';
+  }
   if (name === 'NotFoundError' || name === 'OverconstrainedError') return "i couldn't find a microphone on this device.";
   if (name === 'NotReadableError') return 'another app seems to be using your microphone right now.';
   return "something went wrong starting the microphone. let's try again in a moment.";
@@ -270,9 +285,15 @@ export class VoicemailRecorder {
   async finish(): Promise<string> {
     await this.stopRecorder();
     const vm = await rebuildFromChunks(this.voicemailId);
-    if (!vm || vm.durationMs < 300) {
-      await updateVoicemail(this.voicemailId, { status: 'draft' });
-      throw new Error("that was too short to keep — i didn't hear anything yet.");
+    const sessionMs = (vm?.durationMs ?? 0) - this.baseMs;
+    if (!vm || sessionMs < MIN_KEEP_MS) {
+      if (this.baseMs === 0) {
+        // a brand-new recording under a second long: nothing worth keeping, and no empty draft left behind
+        await this.discardData();
+        throw new Error("that was too short to keep, so nothing was saved.");
+      }
+      // continuing a draft and finishing straight away: keep what was there, drop the blip
+      await this.dropThisSession();
     }
     await updateVoicemail(this.voicemailId, { status: 'saved' });
     return this.voicemailId;
@@ -282,12 +303,23 @@ export class VoicemailRecorder {
   async saveDraft(): Promise<string> {
     await this.stopRecorder();
     const vm = await rebuildFromChunks(this.voicemailId);
-    if (!vm || vm.durationMs === 0) {
-      await this.discardData();
-      return '';
+    if (!vm || vm.durationMs - this.baseMs < MIN_KEEP_MS) {
+      if (this.baseMs === 0) {
+        await this.discardData();
+        return '';
+      }
+      await this.dropThisSession();
     }
     await updateVoicemail(this.voicemailId, { status: 'draft' });
     return this.voicemailId;
+  }
+
+  /** Remove only the audio recorded since this session started (used for blips under a second). */
+  private async dropThisSession() {
+    await db.chunks.where('segmentId').equals(this.segmentId).delete();
+    const vm = await db.voicemails.get(this.voicemailId);
+    if (vm) await updateVoicemail(vm.id, { segments: vm.segments.filter((x) => x.id !== this.segmentId) });
+    await rebuildFromChunks(this.voicemailId);
   }
 
   /** Throw away only what this session recorded. A resumed draft keeps its earlier audio. */

@@ -1,5 +1,5 @@
 import { db, uid } from './db';
-import { DEFAULT_SETTINGS, type Collection, type Settings, type Voicemail } from './types';
+import { DEFAULT_SETTINGS, DELETED_KEEP_DAYS, type Collection, type Settings, type Voicemail } from './types';
 
 // ---------------------------------------------------------------- settings
 
@@ -91,7 +91,8 @@ export async function recoverInterruptedRecordings(): Promise<number> {
   let recovered = 0;
   for (const vm of stuck) {
     const rebuilt = await rebuildFromChunks(vm.id);
-    if (rebuilt && rebuilt.durationMs > 0) {
+    // keep anything over a second; shorter than that was an accidental tap
+    if (rebuilt && rebuilt.durationMs >= 1000) {
       await updateVoicemail(vm.id, { status: 'draft' });
       recovered++;
     } else {
@@ -101,6 +102,46 @@ export async function recoverInterruptedRecordings(): Promise<number> {
   return recovered;
 }
 
+/**
+ * "Delete" from the app: the voicemail moves to recently deleted for DELETED_KEEP_DAYS days.
+ * Nothing is erased yet, and restoring puts it back exactly where it was — including its collections.
+ */
+export async function moveToDeleted(id: string) {
+  await db.transaction('rw', [db.voicemails, db.collections], async () => {
+    const vm = await db.voicemails.get(id);
+    if (!vm || vm.status === 'deleted') return;
+    const cols = await db.collections.where('voicemailIds').equals(id).toArray();
+    for (const c of cols) await db.collections.update(c.id, { voicemailIds: c.voicemailIds.filter((v) => v !== id) });
+    await db.voicemails.update(id, {
+      status: 'deleted',
+      deletedAt: Date.now(),
+      deletedFrom: vm.status === 'draft' ? 'draft' : 'saved',
+      deletedCollections: cols.map((c) => c.id),
+    });
+  });
+}
+
+export async function restoreDeleted(id: string) {
+  await db.transaction('rw', [db.voicemails, db.collections], async () => {
+    const vm = await db.voicemails.get(id);
+    if (!vm || vm.status !== 'deleted') return;
+    for (const cid of vm.deletedCollections ?? []) {
+      const c = await db.collections.get(cid);
+      if (c && !c.voicemailIds.includes(id)) await db.collections.update(cid, { voicemailIds: [...c.voicemailIds, id] });
+    }
+    await db.voicemails.update(id, { status: vm.deletedFrom ?? 'saved', deletedAt: null, deletedFrom: null, deletedCollections: [] });
+  });
+}
+
+/** Erase voicemails that have been in recently deleted for longer than DELETED_KEEP_DAYS. Runs on start-up. */
+export async function purgeOldDeleted(now = Date.now()): Promise<number> {
+  const cutoff = now - DELETED_KEEP_DAYS * 86_400_000;
+  const old = await db.voicemails.where('status').equals('deleted').filter((v) => (v.deletedAt ?? 0) < cutoff).toArray();
+  for (const v of old) await deleteVoicemail(v.id);
+  return old.length;
+}
+
+/** Erase a voicemail for good: its audio, artwork and photos. Used by "delete forever" and the 30-day clean-up. */
 export async function deleteVoicemail(id: string) {
   const vm = await db.voicemails.get(id);
   await db.transaction('rw', [db.voicemails, db.chunks, db.images, db.collections], async () => {
@@ -117,9 +158,7 @@ export async function deleteVoicemail(id: string) {
   });
 }
 
-export function isLocked(vm: Pick<Voicemail, 'unlockAt'>, now = Date.now()): boolean {
-  return vm.unlockAt != null && vm.unlockAt > now;
-}
+export { isLocked } from '../lib/library';
 
 export async function markPlayed(id: string) {
   const vm = await db.voicemails.get(id);

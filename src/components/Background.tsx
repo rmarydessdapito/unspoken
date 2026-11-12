@@ -18,7 +18,8 @@ export async function runBackgroundChecks(now = Date.now()) {
   const key = todayKey(new Date(now));
   if (s.remindersEnabled && reminderDue(s.reminderTime, s.lastReminderDate, key, new Date(now))) {
     await setSetting('lastReminderDate', key);
-    await notify('unspoken', reminderLine(new Date(now)), '/record');
+    // you're already here — a "want to talk?" notification would just interrupt
+    if (document.visibilityState !== 'visible') await notify('unspoken', reminderLine(new Date(now)), '/record');
   }
 }
 

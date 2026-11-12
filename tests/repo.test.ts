@@ -125,3 +125,102 @@ describe('backup & restore', () => {
     await expect(importBackup(bogus, () => {})).rejects.toThrow(/unspoken backup/);
   });
 });
+
+describe('recently deleted', () => {
+  it('moves to the bin, leaves its collections, and comes back to them on restore', async () => {
+    const { moveToDeleted, restoreDeleted } = await import('../src/db/repo');
+    await seedRecording('v1', 'saved', [{ id: 's1', chunks: 2 }]);
+    const col = await createCollection('people i love');
+    await addToCollection(col, 'v1');
+
+    await moveToDeleted('v1');
+    const deleted = await db.voicemails.get('v1');
+    expect(deleted?.status).toBe('deleted');
+    expect(deleted?.deletedCollections).toEqual([col]);
+    expect((await db.collections.get(col))?.voicemailIds).toEqual([]);
+    expect(await db.chunks.count()).toBe(2); // audio is kept while in the bin
+
+    await restoreDeleted('v1');
+    expect((await db.voicemails.get('v1'))?.status).toBe('saved');
+    expect((await db.collections.get(col))?.voicemailIds).toEqual(['v1']);
+  });
+
+  it('restores a deleted draft as a draft', async () => {
+    const { moveToDeleted, restoreDeleted } = await import('../src/db/repo');
+    await seedRecording('d1', 'saved', [{ id: 'sd', chunks: 1 }]);
+    await db.voicemails.update('d1', { status: 'draft' });
+    await moveToDeleted('d1');
+    await restoreDeleted('d1');
+    expect((await db.voicemails.get('d1'))?.status).toBe('draft');
+  });
+
+  it('erases only what has been in the bin for over 30 days', async () => {
+    const { moveToDeleted, purgeOldDeleted } = await import('../src/db/repo');
+    await seedRecording('old', 'saved', [{ id: 'so', chunks: 2 }]);
+    await seedRecording('new', 'saved', [{ id: 'sn', chunks: 2 }]);
+    await moveToDeleted('old');
+    await moveToDeleted('new');
+    await db.voicemails.update('old', { deletedAt: Date.now() - 31 * 86_400_000 });
+    expect(await purgeOldDeleted()).toBe(1);
+    expect(await db.voicemails.get('old')).toBeUndefined();
+    expect(await db.voicemails.get('new')).toBeDefined();
+    expect(await db.chunks.where('voicemailId').equals('old').count()).toBe(0);
+    expect(await db.chunks.where('voicemailId').equals('new').count()).toBe(2);
+  });
+});
+
+describe('restoring backups safely', () => {
+  it('still restores backups made by the first version (manifest at the end)', async () => {
+    const { importBackup } = await import('../src/lib/backup');
+    const { zipSync, strToU8 } = await import('fflate');
+    const vm = newVoicemail({ id: 'legacy', status: 'saved', title: 'an old backup', segments: [{ id: 'sl', mimeType: 'audio/webm', durationMs: 2000 }] });
+    const manifest = {
+      format: 'unspoken-backup',
+      version: 1,
+      exportedAt: Date.now(),
+      voicemails: [vm],
+      collections: [],
+      settings: [],
+      chunks: [{ voicemailId: 'legacy', segmentId: 'sl', seq: 0, ms: 2000, peaks: [0.5], file: 'audio/legacy/sl-000000.bin', type: 'audio/webm' }],
+      images: [],
+    };
+    // object key order = file order in the zip: audio first, manifest last
+    const zip = zipSync({ 'audio/legacy/sl-000000.bin': strToU8('legacy-audio'), 'manifest.json': strToU8(JSON.stringify(manifest)) });
+    await importBackup(new Blob([zip as BlobPart]), () => {});
+    expect((await db.voicemails.get('legacy'))?.title).toBe('an old backup');
+    expect(await (await segmentBlob('sl', 'audio/webm')).text()).toBe('legacy-audio');
+  });
+
+  it('leaves everything as it was when a backup is broken', async () => {
+    const { writeBackup, memorySink, importBackup } = await import('../src/lib/backup');
+    await seedRecording('v1', 'saved', [{ id: 's1', chunks: 3 }]);
+    const zip = (await writeBackup(memorySink()))!;
+    const bytes = new Uint8Array(await zip.arrayBuffer());
+    const broken = new Blob([bytes.slice(0, Math.floor(bytes.length * 0.6))]); // cut off part-way through
+    await expect(importBackup(broken, () => {})).rejects.toThrow();
+    expect(await db.chunks.count()).toBe(3);
+    expect(await (await segmentBlob('s1', 'audio/webm')).text()).toBe('s1-0;s1-1;s1-2;');
+  });
+});
+
+describe('restoring an incomplete backup', () => {
+  it('refuses a backup whose audio is missing, and keeps the audio already here', async () => {
+    const { importBackup } = await import('../src/lib/backup');
+    const { zipSync, strToU8 } = await import('fflate');
+    await seedRecording('v1', 'saved', [{ id: 's1', chunks: 2 }]);
+    const vm = await db.voicemails.get('v1');
+    const manifest = {
+      format: 'unspoken-backup',
+      version: 1,
+      exportedAt: Date.now(),
+      voicemails: [vm],
+      collections: [],
+      settings: [],
+      chunks: [0, 1].map((seq) => ({ voicemailId: 'v1', segmentId: 's1', seq, ms: 2000, peaks: [], file: `audio/v1/s1-00000${seq}.bin`, type: 'audio/webm' })),
+      images: [],
+    };
+    const zip = zipSync({ 'manifest.json': strToU8(JSON.stringify(manifest)), 'audio/v1/s1-000000.bin': strToU8('only-one') });
+    await expect(importBackup(new Blob([zip as BlobPart]), () => {})).rejects.toThrow(/couldn't be restored/);
+    expect(await (await segmentBlob('s1', 'audio/webm')).text()).toBe('s1-0;s1-1;');
+  });
+});

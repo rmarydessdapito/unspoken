@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import type { Voicemail } from '../db/types';
-import { displayTitle, formatDate, formatDuration, formatShortDate } from '../lib/format';
+import { displayTitle, formatDate, formatDuration, formatShortDate, untilText } from '../lib/format';
 import { isLocked } from '../db/repo';
 import { usePlayer } from '../hooks/usePlayer';
 import { player } from '../lib/player';
@@ -38,7 +38,7 @@ export function PlayButton({ vm, size = 'md' }: { vm: Voicemail; size?: 'sm' | '
 function SealedNote({ vm }: { vm: Voicemail }) {
   return (
     <span className="sealed-note">
-      <Icon name="lock" size={14} /> opens {formatDate(vm.unlockAt!)}
+      <Icon name="lock" size={14} /> opens {formatShortDate(vm.unlockAt!)} · {untilText(vm.unlockAt!)}
     </span>
   );
 }

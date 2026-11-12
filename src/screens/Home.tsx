@@ -3,24 +3,26 @@ import { Link, useNavigate } from 'react-router-dom';
 import { db } from '../db/db';
 import { isLocked } from '../db/repo';
 import { Cover } from '../components/Cover';
+import { CollectionCover } from '../components/CollectionCover';
 import { Icon } from '../components/Icon';
 import { VoicemailCard } from '../components/VoicemailItem';
 import { useNow } from '../hooks/useNow';
+import { useTodaysEcho } from '../hooks/useEcho';
 import { useSettings } from '../hooks/useSettings';
 import { displayTitle, formatDate, formatDuration, greeting, plural, timeAgo } from '../lib/format';
-import { pickEcho } from '../lib/library';
 import { DraftRow } from './Drafts';
 
 export function Home() {
   const now = useNow();
   const nav = useNavigate();
   const settings = useSettings();
-  const saved = useLiveQuery(() => db.voicemails.where('status').equals('saved').toArray(), []) ?? [];
+  const savedRaw = useLiveQuery(() => db.voicemails.where('status').equals('saved').toArray(), []);
+  const saved = savedRaw ?? [];
   const drafts = useLiveQuery(() => db.voicemails.where('status').equals('draft').reverse().sortBy('updatedAt'), []) ?? [];
   const collections = useLiveQuery(() => db.collections.orderBy('updatedAt').reverse().toArray(), []) ?? [];
 
   const recent = [...saved].sort((a, b) => b.createdAt - a.createdAt).slice(0, 6);
-  const echo = pickEcho(saved, settings.dismissedEchoes, now);
+  const { echo } = useTodaysEcho(savedRaw, now);
   const sealed = saved.filter((v) => isLocked(v, now));
   const fresh = saved.filter((v) => v.unlockAt != null && !isLocked(v, now) && !v.unlockSeen);
 
@@ -32,8 +34,7 @@ export function Home() {
       </header>
 
       <p className="greeting serif fade-in">
-        {greeting(new Date(now))}
-        {settings.name && greeting(new Date(now)).startsWith('good') ? ` ${settings.name.toLowerCase()}.` : ''}
+        {greeting(new Date(now), settings.name)}
       </p>
 
       <button className="record-hero fade-in" onClick={() => nav('/record?start=1')}>
@@ -122,7 +123,7 @@ export function Home() {
           <div className="shelf">
             {collections.slice(0, 6).map((c) => (
               <Link key={c.id} to={`/collection/${c.id}`} className="col-card">
-                <Cover imageId={c.coverId} seed={c.id + 'c'} title={c.title} />
+                <CollectionCover collection={c} />
                 <span className="card-title">{c.title}</span>
                 <span className="card-sub">{plural(c.voicemailIds.length, 'voicemail')}</span>
               </Link>

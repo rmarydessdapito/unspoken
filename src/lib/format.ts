@@ -34,13 +34,14 @@ export function formatBytes(bytes: number): string {
   return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
-export function greeting(date = new Date()): string {
+export function greeting(date = new Date(), name = ''): string {
   const h = date.getHours();
-  if (h >= 0 && h < 5) return "it's late. what's on your mind?";
-  if (h < 12) return 'good morning.';
-  if (h < 18) return 'good afternoon.';
-  if (h < 22) return 'good evening.';
-  return "it's late. what's on your mind?";
+  const who = name.trim().toLowerCase();
+  const late = who ? `it's late, ${who}. what's on your mind?` : "it's late. what's on your mind?";
+  if (h < 5) return late;
+  const part = h < 12 ? 'morning' : h < 18 ? 'afternoon' : h < 22 ? 'evening' : null;
+  if (!part) return late;
+  return who ? `good ${part}, ${who}.` : `good ${part}.`;
 }
 
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -108,4 +109,19 @@ export function todayKey(date = new Date()): string {
 
 export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+/** "tomorrow", "in 6 days", "in 3 months", "in 2 years" — for future-me countdowns. */
+export function untilText(ts: number, now = Date.now()): string {
+  const start = (t: number) => {
+    const d = new Date(t);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  };
+  const days = Math.round((start(ts) - start(now)) / 86_400_000);
+  if (days <= 0) return ts > now ? 'later today' : 'now';
+  if (days === 1) return 'tomorrow';
+  if (days < 14) return `in ${days} days`;
+  if (days < 60) return `in ${Math.round(days / 7)} weeks`;
+  if (days < 730) return `in ${Math.round(days / 30.44)} months`;
+  return `in ${Math.floor(days / 365.25)} years`;
 }

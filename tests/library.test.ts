@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { newVoicemail } from '../src/db/repo';
 import type { Collection } from '../src/db/types';
-import { defaultTitle, formatDuration, fromDateTimeInputs, greeting, timeAgo } from '../src/lib/format';
-import { downsamplePeaks, EMPTY_FILTERS, filterVoicemails, pickEcho, sortVoicemails, unlockDate } from '../src/lib/library';
+import { defaultTitle, formatDuration, fromDateTimeInputs, greeting, timeAgo, untilText } from '../src/lib/format';
+import {
+  daysUntilFirstEcho,
+  downsamplePeaks,
+  echoDueOn,
+  EMPTY_FILTERS,
+  filterVoicemails,
+  nextEchoDay,
+  pickEcho,
+  searchWords,
+  sortVoicemails,
+  unlockDate,
+} from '../src/lib/library';
+import { lockoutDelayMs } from '../src/lib/lock';
 import { pickPrompts, PROMPTS } from '../src/lib/prompts';
 import { reminderDue } from '../src/lib/notify';
 
@@ -19,6 +31,8 @@ describe('format', () => {
     expect(greeting(new Date(2026, 0, 1, 8))).toBe('good morning.');
     expect(greeting(new Date(2026, 0, 1, 14))).toBe('good afternoon.');
     expect(greeting(new Date(2026, 0, 1, 19))).toBe('good evening.');
+    expect(greeting(new Date(2026, 0, 1, 14), 'Rhoda')).toBe('good afternoon, rhoda.');
+    expect(greeting(new Date(2026, 0, 1, 2), 'rhoda')).toBe("it's late, rhoda. what's on your mind?");
     expect(greeting(new Date(2026, 0, 1, 2))).toBe("it's late. what's on your mind?");
     expect(greeting(new Date(2026, 0, 1, 23))).toBe("it's late. what's on your mind?");
   });
@@ -107,13 +121,40 @@ describe('little echoes', () => {
   it('prefers an anniversary', () => {
     const old = newVoicemail({ id: 'anniv', status: 'saved', recordedAt: new Date(2026, 2, 4, 9).getTime() });
     const other = newVoicemail({ id: 'other', status: 'saved', recordedAt: new Date(2026, 6, 9).getTime() });
-    expect(pickEcho([other, old], {}, now)?.id).toBe('anniv');
+    expect(pickEcho([other, old], { now })?.id).toBe('anniv');
   });
-  it('never echoes recent, dismissed or sealed voicemails', () => {
+  it('never echoes recent, opted-out or sealed voicemails', () => {
     const recent = newVoicemail({ id: 'r', status: 'saved', recordedAt: now - DAY });
-    const dismissed = newVoicemail({ id: 'd', status: 'saved', recordedAt: now - 100 * DAY });
+    const optedOut = newVoicemail({ id: 'd', status: 'saved', recordedAt: now - 100 * DAY });
     const sealed = newVoicemail({ id: 's', status: 'saved', recordedAt: now - 100 * DAY, unlockAt: now + DAY });
-    expect(pickEcho([recent, dismissed, sealed], { d: '2027-03-04' }, now)).toBeNull();
+    expect(pickEcho([recent, optedOut, sealed], { now, neverEcho: ['d'] })).toBeNull();
+  });
+  it('lets a voicemail rest after it echoes, unless nothing else is left', () => {
+    const a = newVoicemail({ id: 'a', status: 'saved', recordedAt: new Date(2026, 4, 10).getTime() });
+    const b = newVoicemail({ id: 'b', status: 'saved', recordedAt: new Date(2026, 5, 11).getTime() });
+    const history = [{ id: 'a', date: '2027-03-01' }];
+    expect(pickEcho([a, b], { now, history })?.id).toBe('b');
+    // both echoed recently: the one that echoed longest ago comes back
+    expect(pickEcho([a, b], { now, history: [{ id: 'b', date: '2027-03-03' }, ...history] })?.id).toBe('a');
+    // after two months of rest it's allowed again
+    expect(pickEcho([a], { now, history: [{ id: 'a', date: '2026-12-01' }] })?.id).toBe('a');
+  });
+  it('arrives on the chosen days', () => {
+    const sun = new Date(2026, 10, 8); // a sunday
+    const mon = new Date(2026, 10, 9);
+    const tue = new Date(2026, 10, 10);
+    expect([sun, mon, tue].map((d) => echoDueOn('daily', d))).toEqual([true, true, true]);
+    expect([sun, mon, tue].map((d) => echoDueOn('often', d))).toEqual([false, true, false]);
+    expect([sun, mon, tue].map((d) => echoDueOn('weekly', d))).toEqual([true, false, false]);
+    expect(echoDueOn('off', sun)).toBe(false);
+    expect(nextEchoDay('weekly', tue)?.getDay()).toBe(0);
+    expect(nextEchoDay('often', tue)?.getDate()).toBe(12); // thursday
+    expect(nextEchoDay('off', tue)).toBeNull();
+  });
+  it('says when the first echo can arrive', () => {
+    const v = newVoicemail({ id: 'v', status: 'saved', recordedAt: now - 2 * DAY });
+    expect(daysUntilFirstEcho([v], now)).toBe(5);
+    expect(daysUntilFirstEcho([], now)).toBeNull();
   });
 });
 
@@ -143,5 +184,71 @@ describe('prompts & reminders', () => {
     expect(reminderDue('21:00', null, '2026-11-04', at)).toBe(true);
     expect(reminderDue('21:00', '2026-11-04', '2026-11-04', at)).toBe(false);
     expect(reminderDue('22:00', null, '2026-11-04', at)).toBe(false);
+  });
+});
+
+describe('search', () => {
+  const now = new Date(2026, 10, 12, 12).getTime();
+  const open = newVoicemail({ id: 'o', status: 'saved', title: 'beaches and café nights', recordedAt: new Date(2026, 0, 5, 14).getTime(), mood: 'happy', tags: ['summer'] });
+  const sealed = newVoicemail({
+    id: 's',
+    status: 'saved',
+    title: 'secret letter',
+    description: 'the hidden word is pineapple',
+    mood: 'hopeful',
+    tags: ['future'],
+    recordedAt: new Date(2026, 9, 1).getTime(),
+    unlockAt: new Date(2026, 11, 25, 8).getTime(),
+  });
+  const q = (query: string, extra = {}) => filterVoicemails([open, sealed], { ...EMPTY_FILTERS, query, ...extra }, [], now).map((v) => v.id);
+
+  it('matches from the start of words, ignoring accents and case', () => {
+    expect(q('beach')).toEqual(['o']);
+    expect(q('CAFE')).toEqual(['o']);
+    expect(q('aches')).toEqual([]);
+    expect(searchWords("Don’t #night")).toEqual(['don', 't', 'night']);
+  });
+  it('never reveals what a sealed voicemail holds', () => {
+    expect(q('pineapple')).toEqual([]);
+    expect(q('secret')).toEqual([]);
+    expect(q('future me')).toEqual(['s']);
+    expect(q('', { mood: 'hopeful' })).toEqual([]);
+    expect(q('', { tag: 'future' })).toEqual([]);
+    expect(sortVoicemails([open, sealed], 'title', now).map((v) => v.id)).toEqual(['o', 's']);
+  });
+  it('sorts sealed voicemails last by length so their length stays private', () => {
+    expect(sortVoicemails([sealed, open], 'longest', now)[1].id).toBe('s');
+  });
+});
+
+describe('future me dates', () => {
+  it('keeps "next month" inside the next month', () => {
+    expect(unlockDate('month', { now: new Date(2027, 0, 31, 12).getTime() })).toBe(new Date(2027, 1, 28, 8).getTime());
+  });
+  it('opens leap-day birthdays on feb 28 in other years', () => {
+    expect(unlockDate('birthday', { now: new Date(2026, 5, 1).getTime(), birthday: '02-29' })).toBe(new Date(2027, 1, 28, 8).getTime());
+    expect(unlockDate('birthday', { now: new Date(2027, 5, 1).getTime(), birthday: '02-29' })).toBe(new Date(2028, 1, 29, 8).getTime());
+  });
+  it('never accepts today or the past as a custom day, even early in the morning', () => {
+    const early = new Date(2026, 10, 12, 6).getTime();
+    expect(unlockDate('custom', { now: early, custom: '2026-11-12' })).toBeNull();
+    expect(unlockDate('custom', { now: early, custom: '2026-11-13' })).toBe(new Date(2026, 10, 13, 8).getTime());
+    expect(unlockDate('custom', { now: early, custom: '2150-01-01' })).toBeNull();
+  });
+  it('counts down in friendly words', () => {
+    const now = new Date(2026, 10, 12, 20).getTime();
+    expect(untilText(new Date(2026, 10, 13, 8).getTime(), now)).toBe('tomorrow');
+    expect(untilText(new Date(2026, 10, 19, 8).getTime(), now)).toBe('in 7 days');
+    expect(untilText(new Date(2027, 2, 12, 8).getTime(), now)).toBe('in 4 months');
+    expect(untilText(new Date(2030, 0, 1, 8).getTime(), now)).toBe('in 3 years');
+  });
+});
+
+describe('passcode guessing', () => {
+  it('lets typos through, then slows guessing down', () => {
+    expect([1, 4].map(lockoutDelayMs)).toEqual([0, 0]);
+    expect(lockoutDelayMs(5)).toBe(30_000);
+    expect(lockoutDelayMs(8)).toBe(5 * 60_000);
+    expect(lockoutDelayMs(20)).toBe(15 * 60_000);
   });
 });

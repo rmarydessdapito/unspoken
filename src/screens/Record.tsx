@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../db/db';
-import { updateVoicemail } from '../db/repo';
+import { moveToDeleted, updateVoicemail } from '../db/repo';
 import { Icon } from '../components/Icon';
 import { Sheet } from '../components/Sheet';
 import { useToast } from '../components/Toast';
@@ -10,7 +10,7 @@ import { useSettings } from '../hooks/useSettings';
 import { formatDuration } from '../lib/format';
 import { player } from '../lib/player';
 import { pickPrompts } from '../lib/prompts';
-import { describeMicError, recordingSupported, VoicemailRecorder, type RecorderState } from '../lib/recorder';
+import { describeMicError, micPermission, recordingSupported, VoicemailRecorder, type RecorderState } from '../lib/recorder';
 import { haptic, playBeep, playClick } from '../lib/sounds';
 import { LiveTranscriber, transcriptionSupported } from '../lib/transcription';
 
@@ -31,6 +31,7 @@ export function Record() {
   const [state, setState] = useState<RecorderState>('idle');
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
   const [justStarted, setJustStarted] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [showPrompts, setShowPrompts] = useState(false);
@@ -55,7 +56,11 @@ export function Record() {
       recRef.current?.flush();
       e.preventDefault();
     };
-    const onHide = () => document.visibilityState === 'hidden' && recRef.current?.flush();
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') recRef.current?.flush();
+      // the browser drops the screen-awake lock when you switch away; take it back on return
+      else if (recRef.current?.state === 'recording' || recRef.current?.state === 'paused') acquireWakeLock();
+    };
     const onPageHide = () => recRef.current?.flush();
     window.addEventListener('beforeunload', onBeforeUnload);
     window.addEventListener('pagehide', onPageHide);
@@ -89,6 +94,16 @@ export function Record() {
     });
   }, [draftId, nav, toast]);
 
+  // keep the screen on while recording (some phones stop the microphone when the screen sleeps)
+  const acquireWakeLock = async () => {
+    try {
+      wakeLock.current =
+        (await (navigator as unknown as { wakeLock?: { request(t: string): Promise<WakeLockSentinelLike> } }).wakeLock?.request('screen')) ?? null;
+    } catch {
+      /* wake lock is optional */
+    }
+  };
+
   const releaseWakeLock = () => {
     wakeLock.current?.release().catch(() => {});
     wakeLock.current = null;
@@ -111,6 +126,8 @@ export function Record() {
       return;
     }
     player.pause();
+    // the first time, the browser will ask — say so, so the pop-up isn't a surprise
+    setAsking((await micPermission()) === 'prompt');
     const rec = new VoicemailRecorder({
       onState: setState,
       onError: (m) => toast(m),
@@ -127,12 +144,7 @@ export function Record() {
       haptic(settings.haptics, 20);
       setJustStarted(true);
       setTimeout(() => setJustStarted(false), 1800);
-      try {
-        wakeLock.current =
-          (await (navigator as unknown as { wakeLock?: { request(t: string): Promise<WakeLockSentinelLike> } }).wakeLock?.request('screen')) ?? null;
-      } catch {
-        /* wake lock is optional */
-      }
+      await acquireWakeLock();
       if (settings.liveTranscription && transcriptionSupported()) {
         const existing = draftId ? ((await db.voicemails.get(id))?.transcript ?? '') : '';
         const t = new LiveTranscriber(existing);
@@ -213,9 +225,19 @@ export function Record() {
     setLeaving(false);
     transcriber.current?.stop();
     transcriber.current = null;
-    await recRef.current?.discardSession();
+    if (draftInfo) {
+      // continuing an unfinished thought: drop only what was just said
+      await recRef.current?.discardSession();
+      toast('kept what you had before.');
+    } else {
+      // a new recording goes to recently deleted, just in case
+      const id = await recRef.current?.saveDraft();
+      if (id) {
+        await moveToDeleted(id);
+        toast('moved to recently deleted, just in case.');
+      } else toast('let go.');
+    }
     releaseWakeLock();
-    toast(draftInfo ? 'kept what you had before.' : 'let go.');
     if (blocker.state === 'blocked') blocker.proceed();
     else nav('/', { replace: true });
   };
@@ -283,10 +305,14 @@ export function Record() {
 
         {liveText && state !== 'idle' && <p className="live-transcript">{liveText.slice(-220)}</p>}
 
+        {asking && state === 'starting' && <p className="muted small">your browser will ask to use the microphone — tap allow.</p>}
         {error && (
-          <p className="error-note" role="alert">
-            {error}
-          </p>
+          <div className="error-note record-error" role="alert">
+            <p>{error}</p>
+            <button className="btn btn-gold btn-sm" onClick={start}>
+              try again
+            </button>
+          </div>
         )}
       </section>
 

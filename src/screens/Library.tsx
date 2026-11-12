@@ -1,10 +1,10 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { db } from '../db/db';
 import { createCollection, setSetting } from '../db/repo';
-import { MOODS, type SortKey } from '../db/types';
-import { Cover } from '../components/Cover';
+import { MOODS, type Collection, type CollectionSortKey, type SortKey } from '../db/types';
+import { CollectionCover } from '../components/CollectionCover';
 import { Icon } from '../components/Icon';
 import { Sheet } from '../components/Sheet';
 import { VoicemailCard, VoicemailRow } from '../components/VoicemailItem';
@@ -13,13 +13,33 @@ import { formatDuration, plural } from '../lib/format';
 import { activeFilterCount, allTags, EMPTY_FILTERS, filterVoicemails, SORT_LABELS, sortVoicemails, type LibraryFilters } from '../lib/library';
 import { PageHeader } from './parts';
 
+// remembered while the app is open, so opening a voicemail and coming back keeps your search and filters
+let rememberedFilters: LibraryFilters = EMPTY_FILTERS;
+
+const COLLECTION_SORT_LABELS: Record<CollectionSortKey, string> = { recent: 'recently changed', title: 'a → z', size: 'most voicemails' };
+
+export function sortCollections(list: Collection[], sort: CollectionSortKey): Collection[] {
+  const by: Record<CollectionSortKey, (a: Collection, b: Collection) => number> = {
+    recent: (a, b) => b.updatedAt - a.updatedAt,
+    title: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }),
+    size: (a, b) => b.voicemailIds.length - a.voicemailIds.length || a.title.localeCompare(b.title),
+  };
+  return [...list].sort((a, b) => by[sort](a, b) || a.id.localeCompare(b.id));
+}
+
 export function Library() {
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') === 'collections' ? 'collections' : 'voicemails';
   const settings = useSettings();
   const saved = useLiveQuery(() => db.voicemails.where('status').equals('saved').toArray(), []);
-  const collections = useLiveQuery(() => db.collections.orderBy('updatedAt').reverse().toArray(), []) ?? [];
-  const [filters, setFilters] = useState<LibraryFilters>(() => ({ ...EMPTY_FILTERS, tag: params.get('tag') }));
+  const allCollections = useLiveQuery(() => db.collections.toArray(), []) ?? [];
+  const collections = useMemo(() => sortCollections(allCollections, settings.collectionSort), [allCollections, settings.collectionSort]);
+  const deletedCount = useLiveQuery(() => db.voicemails.where('status').equals('deleted').count(), []) ?? 0;
+  // a #tag link opens the library filtered to that tag; otherwise pick up where you left off
+  const [filters, setFilters] = useState<LibraryFilters>(() => (params.get('tag') ? { ...EMPTY_FILTERS, tag: params.get('tag') } : rememberedFilters));
+  useEffect(() => {
+    rememberedFilters = filters;
+  }, [filters]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [newCol, setNewCol] = useState(false);
   const [colName, setColName] = useState('');
@@ -104,7 +124,17 @@ export function Library() {
               </Link>
             </div>
           )}
-          {saved && saved.length > 0 && results.length === 0 && <p className="empty">nothing matches that. try fewer words?</p>}
+          {saved && saved.length > 0 && results.length === 0 && (
+            <div className="empty">
+              <p>
+                nothing matches {filters.query ? <>“{filters.query}”</> : 'that'}
+                {nFilters > 0 ? ` with ${plural(nFilters, 'filter')} on` : ''}.
+              </p>
+              <button className="link" onClick={() => setFilters(EMPTY_FILTERS)}>
+                clear search and filters
+              </button>
+            </div>
+          )}
 
           {settings.libraryView === 'grid' ? (
             <div className="grid">
@@ -125,10 +155,28 @@ export function Library() {
           <button className="new-col" onClick={() => setNewCol(true)}>
             <Icon name="plus" /> start a new collection
           </button>
+          {collections.length > 1 && (
+            <div className="sort-row">
+              <label className="sort">
+                <span className="muted small">sort</span>
+                <select
+                  value={settings.collectionSort}
+                  onChange={(e) => setSetting('collectionSort', e.target.value as CollectionSortKey)}
+                  aria-label="sort collections by"
+                >
+                  {(Object.keys(COLLECTION_SORT_LABELS) as CollectionSortKey[]).map((k) => (
+                    <option key={k} value={k}>
+                      {COLLECTION_SORT_LABELS[k]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
           <div className="grid">
             {collections.map((c) => (
               <Link key={c.id} to={`/collection/${c.id}`} className="col-card">
-                <Cover imageId={c.coverId} seed={c.id + 'c'} title={c.title} />
+                <CollectionCover collection={c} />
                 <span className="card-title">{c.title}</span>
                 <span className="card-sub">{plural(c.voicemailIds.length, 'voicemail')}</span>
               </Link>
@@ -136,6 +184,12 @@ export function Library() {
           </div>
           {!collections.length && <p className="empty">late night thoughts, people i love, letters to future me… make a home for them.</p>}
         </>
+      )}
+
+      {deletedCount > 0 && (
+        <Link to="/deleted" className="deleted-link small">
+          <Icon name="trash" size={14} /> recently deleted · {deletedCount}
+        </Link>
       )}
 
       <Sheet open={filterOpen} onClose={() => setFilterOpen(false)} title="filter">

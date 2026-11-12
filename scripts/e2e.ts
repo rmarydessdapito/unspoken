@@ -297,21 +297,96 @@ try {
   await page.waitForFunction(() => document.body.innerText.includes('you got it out.'), { timeout: 8000 });
   await page.type('input[name="title"]', 'i hope future me is okay.');
   await clickText('next week', '.chip');
-  check('future me seal is explained', (await text()).includes('sealed until'));
+  check('future me shows when it opens', (await text()).includes('opens') && (await text()).includes('in 7 days'));
   await clickText('keep it');
-  await page.waitForFunction(() => location.pathname === '/library');
-  await sleep(400);
-  check('sealed voicemail shows locked in library', (await text()).includes('for future me'));
+  await page.waitForFunction(() => document.body.innerText.includes('seal it for future you?'), { timeout: 5000 });
+  check('sealing asks for confirmation first', true);
+  await clickText('seal it', '.sheet button');
+  await page.waitForFunction(() => location.pathname === '/echoes', { timeout: 8000 });
+  await sleep(500);
+  check('sealed voicemail waits on the future me shelf', (await text()).includes('for future me'));
   const sealed = await dbQuery((v) => v.find((x) => x.title === 'i hope future me is okay.'));
   await page.goto(`${BASE}/voicemail/${sealed.id}`, { waitUntil: 'networkidle0' });
   check('sealed voicemail cannot be opened early', (await text()).includes("this one's sealed."));
   await shot('11-sealed');
+  await page.goto(`${BASE}/voicemail/${sealed.id}/customize`, { waitUntil: 'networkidle0' });
+  await sleep(400);
+  const editValues = await page.evaluate(() => [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea')].map((e) => e.value).join(' '));
+  check('sealed details stay hidden on the edit page too', !editValues.includes('i hope') && (await text()).includes("this one's sealed"));
+  await page.goto(`${BASE}/library`, { waitUntil: 'networkidle0' });
+  await page.$eval('.search input', (e) => ((e as HTMLInputElement).value = ''));
+  await page.type('.search input', 'i hope');
+  await sleep(400);
+  check('search never reveals a sealed voicemail’s words', (await page.$$('.vm-card, .vm-row')).length === 0);
+  await clickText('clear search and filters');
 
-  // ---------------------------------------------------------------- you / settings
+  // the day arrives: pretend it's already past and open it
+  await page.evaluate(async (id) => {
+    const req = indexedDB.open('unspoken');
+    const idb: IDBDatabase = await new Promise((r) => (req.onsuccess = () => r(req.result)));
+    const store = idb.transaction('voicemails', 'readwrite').objectStore('voicemails');
+    const vm = await new Promise<any>((r) => (store.get(id).onsuccess = (e) => r((e.target as IDBRequest).result)));
+    store.put({ ...vm, unlockAt: Date.now() - 1000 });
+    idb.close();
+  }, sealed.id);
+  await page.goto(BASE, { waitUntil: 'networkidle0' });
+  await sleep(600);
+  check('home announces the voicemail from your past self', (await text()).includes('you have a voicemail from your past self'));
+  await page.goto(`${BASE}/voicemail/${sealed.id}`, { waitUntil: 'networkidle0' });
+  await sleep(400);
+  check('opening it is a moment, not a list item', (await text()).includes('open it'));
+  await shot('11b-reveal');
+  await clickText('open it');
+  await page.waitForSelector('.player-card', { timeout: 5000 });
+  check('after opening, it plays like any voicemail', (await text()).includes('i hope future me is okay.'));
+
+  // ---------------------------------------------------------------- recently deleted
+  await tap('.action.danger');
+  await clickText('delete', '.sheet button');
+  await page.waitForFunction(() => location.pathname === '/library', { timeout: 5000 });
+  await page.goto(`${BASE}/deleted`, { waitUntil: 'networkidle0' });
+  await sleep(400);
+  check('deleting moves it to recently deleted', (await text()).includes('i hope future me is okay.'));
+  await clickText('restore');
+  await sleep(500);
+  const restored = await dbQuery((v) => v.find((x) => x.title === 'i hope future me is okay.'));
+  check('and it can be restored', restored.status === 'saved');
+
+  // ---------------------------------------------------------------- you / settings & the passcode lock
   await page.goto(`${BASE}/you`, { waitUntil: 'networkidle0' });
   await sleep(800);
   check('settings show storage usage', (await text()).includes('of voice'));
   await shot('12-you');
+  await clickText('set a passcode');
+  await sleep(300);
+  const pins = await page.$$('.sheet input.pin');
+  await pins[0].type('2468');
+  await pins[1].type('2468');
+  await clickText('set passcode', '.sheet button');
+  await sleep(1200);
+  await page.reload({ waitUntil: 'networkidle0' });
+  await sleep(1500);
+  check('the passcode lock is up when the app opens', !!(await page.$('.lock-screen input')));
+  await page.type('.lock-screen input', '1111');
+  await page.keyboard.press('Enter');
+  await sleep(600);
+  check('a wrong passcode is refused', !!(await page.$('.lock-screen input')) && (await text()).includes("that's not it"));
+  await page.$eval('.lock-screen input', (e) => ((e as HTMLInputElement).value = ''));
+  await page.type('.lock-screen input', '2468');
+  await page.keyboard.press('Enter');
+  await sleep(1000);
+  check('the right passcode unlocks', !(await page.$('.lock-screen')));
+  await clickText('remove lock');
+  await sleep(300);
+  await page.type('.sheet input.pin', '0000');
+  await clickText('remove lock', '.sheet button');
+  await sleep(600);
+  check('removing the lock needs the current passcode', (await text()).includes("that's not your current passcode"));
+  await page.$eval('.sheet input.pin', (e) => ((e as HTMLInputElement).value = ''));
+  await page.type('.sheet input.pin', '2468');
+  await clickText('remove lock', '.sheet button');
+  await sleep(800);
+  check('…and then it comes off', (await text()).includes('set a passcode'));
 
   await page.goto(BASE, { waitUntil: 'networkidle0' });
   await sleep(600);

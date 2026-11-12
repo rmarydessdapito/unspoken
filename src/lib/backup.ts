@@ -11,7 +11,7 @@ import { db } from '../db/db';
 import type { Chunk, Collection, StoredImage, Voicemail } from '../db/types';
 
 export const BACKUP_FORMAT = 'unspoken-backup';
-const EXCLUDED_SETTINGS = new Set(['passcodeHash', 'passcodeSalt', 'biometricCredentialId']);
+const EXCLUDED_SETTINGS = new Set(['passcodeHash', 'passcodeSalt', 'biometricCredentialId', 'failedUnlocks', 'lockoutUntil']);
 
 export interface BackupProgress {
   done: number;
@@ -54,12 +54,13 @@ async function makeSink(filename: string): Promise<Sink> {
 }
 
 export function memorySink(): Sink {
-  const parts: Uint8Array[] = [];
+  // small Blobs rather than raw bytes: the browser can keep them out of the page's memory
+  const parts: Blob[] = [];
   return {
     write: async (d) => {
-      parts.push(d);
+      parts.push(new Blob([d as BlobPart]));
     },
-    close: async () => new Blob(parts as BlobPart[], { type: 'application/zip' }),
+    close: async () => new Blob(parts, { type: 'application/zip' }),
   };
 }
 
@@ -127,112 +128,147 @@ export async function writeBackup(sink: Sink, onProgress: (p: BackupProgress) =>
     images: [],
   };
 
-  // read chunks one at a time so long recordings never sit in memory together
+  // the manifest goes first, so a restore can save each file the moment it's read instead of holding the whole backup in memory.
+  // chunk records only point at their audio here; the audio itself is read one chunk at a time below.
+  const fileFor = (c: { voicemailId: string; segmentId: string; seq: number }) => `audio/${c.voicemailId}/${c.segmentId}-${String(c.seq).padStart(6, '0')}.bin`;
+  await db.chunks.each((c) => {
+    manifest.chunks.push({ voicemailId: c.voicemailId, segmentId: c.segmentId, seq: c.seq, ms: c.ms, peaks: c.peaks, file: fileFor(c), type: c.blob.type });
+  });
+  for (const img of imageRows) manifest.images.push({ id: img.id, createdAt: img.createdAt, file: `images/${img.id}.bin`, type: img.blob.type });
+  await addFile('manifest.json', strToU8(JSON.stringify(manifest)));
+
   for (const key of chunkKeys) {
     const c = await db.chunks.get(key);
     if (!c) continue;
-    const file = `audio/${c.voicemailId}/${c.segmentId}-${String(c.seq).padStart(6, '0')}.bin`;
-    manifest.chunks.push({ voicemailId: c.voicemailId, segmentId: c.segmentId, seq: c.seq, ms: c.ms, peaks: c.peaks, file, type: c.blob.type });
-    await addFile(file, new Uint8Array(await c.blob.arrayBuffer()));
+    await addFile(fileFor(c), new Uint8Array(await c.blob.arrayBuffer()));
     onProgress({ done: ++done, total, label: 'packing your voice' });
   }
   for (const img of imageRows) {
-    const file = `images/${img.id}.bin`;
-    manifest.images.push({ id: img.id, createdAt: img.createdAt, file, type: img.blob.type });
-    await addFile(file, new Uint8Array(await img.blob.arrayBuffer()));
+    await addFile(`images/${img.id}.bin`, new Uint8Array(await img.blob.arrayBuffer()));
     onProgress({ done: ++done, total, label: 'packing your photos' });
   }
-  await addFile('manifest.json', strToU8(JSON.stringify(manifest)));
   onProgress({ done: ++done, total, label: 'almost there' });
   zip.end();
   await allWritten;
   return sink.close();
 }
 
-/** Restore from a backup .zip. Existing items with the same id are replaced; nothing else is removed. */
+/**
+ * Restore from a backup .zip. Voicemails in the backup replace any copy already here; nothing else is removed.
+ *
+ * Files are saved as they're read (the manifest comes first in backups made by this version), so even a backup
+ * with hours of audio never has to fit in memory. Older backups, with the manifest last, are buffered instead.
+ * Existing audio for the restored voicemails is only removed once the new audio is fully in — a restore that
+ * fails halfway leaves everything as it was.
+ */
 export async function importBackup(file: Blob, onProgress: (p: BackupProgress) => void): Promise<{ voicemails: number }> {
-  const files = new Map<string, Uint8Array>();
-  await new Promise<void>((resolve, reject) => {
-    const unzip = new Unzip();
-    unzip.register(UnzipPassThrough);
-    unzip.register(UnzipInflate);
-    let open = 0;
-    let inputDone = false;
-    const maybeDone = () => {
-      if (inputDone && open === 0) resolve();
-    };
-    unzip.onfile = (f) => {
-      open++;
-      const parts: Uint8Array[] = [];
-      f.ondata = (err, data, final) => {
-        if (err) return reject(err);
-        parts.push(data);
-        if (final) {
-          const len = parts.reduce((a, p) => a + p.length, 0);
-          const out = new Uint8Array(len);
+  let manifest: Manifest | null = null;
+  const waiting = new Map<string, Uint8Array>(); // files read before the manifest (older backups)
+  let chunkMeta = new Map<string, Manifest['chunks'][number]>();
+  let imageMeta = new Map<string, Manifest['images'][number]>();
+  let oldChunkKeys: number[] = [];
+  const addedChunkKeys: number[] = [];
+  let writes: Promise<unknown> = Promise.resolve();
+  let total = 1;
+  let done = 0;
+
+  const save = async (name: string, data: Uint8Array) => {
+    const c = chunkMeta.get(name);
+    if (c) {
+      const key = await db.chunks.add({ voicemailId: c.voicemailId, segmentId: c.segmentId, seq: c.seq, ms: c.ms, peaks: c.peaks, blob: new Blob([data as BlobPart], { type: c.type }) });
+      addedChunkKeys.push(key);
+      onProgress({ done: ++done, total, label: 'putting your voice back' });
+      return;
+    }
+    const i = imageMeta.get(name);
+    if (i) {
+      await db.images.put({ id: i.id, createdAt: i.createdAt, blob: new Blob([data as BlobPart], { type: i.type }) });
+      onProgress({ done: ++done, total, label: 'putting your photos back' });
+    }
+  };
+
+  const onManifest = async (raw: Uint8Array) => {
+    let m: Manifest;
+    try {
+      m = JSON.parse(strFromU8(raw)) as Manifest;
+    } catch {
+      throw new Error("this doesn't look like an unspoken backup.");
+    }
+    if (m.format !== BACKUP_FORMAT || !Array.isArray(m.voicemails)) throw new Error("this doesn't look like an unspoken backup.");
+    manifest = m;
+    chunkMeta = new Map(m.chunks.map((c) => [c.file, c]));
+    imageMeta = new Map(m.images.map((i) => [i.file, i]));
+    total = m.chunks.length + m.images.length;
+    oldChunkKeys = (await db.chunks
+      .where('voicemailId')
+      .anyOf(m.voicemails.map((v) => v.id))
+      .primaryKeys()) as number[];
+    for (const [name, data] of waiting) await save(name, data);
+    waiting.clear();
+  };
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const unzip = new Unzip();
+      unzip.register(UnzipPassThrough);
+      unzip.register(UnzipInflate);
+      let open = 0;
+      let inputDone = false;
+      const maybeDone = () => {
+        if (inputDone && open === 0) writes.then(() => resolve(), reject);
+      };
+      unzip.onfile = (f) => {
+        open++;
+        const parts: Uint8Array[] = [];
+        f.ondata = (err, data, final) => {
+          if (err) return reject(err);
+          parts.push(data);
+          if (!final) return;
+          const out = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
           let o = 0;
           for (const p of parts) {
             out.set(p, o);
             o += p.length;
           }
-          files.set(f.name, out);
+          const name = f.name;
+          writes = writes.then(() => (name === 'manifest.json' ? onManifest(out) : manifest ? save(name, out) : void waiting.set(name, out)));
+          writes.catch(reject);
           open--;
           maybeDone();
-        }
+        };
+        f.start();
       };
-      f.start();
-    };
-    (async () => {
-      const reader = file.stream().getReader();
-      let read = 0;
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        read += value.length;
-        unzip.push(value, false);
-        onProgress({ done: read, total: file.size, label: 'opening your backup' });
-      }
-      unzip.push(new Uint8Array(0), true);
-      inputDone = true;
-      maybeDone();
-    })().catch(reject);
-  });
-
-  const raw = files.get('manifest.json');
-  if (!raw) throw new Error("this doesn't look like an unspoken backup.");
-  const manifest = JSON.parse(strFromU8(raw)) as Manifest;
-  if (manifest.format !== BACKUP_FORMAT) throw new Error("this doesn't look like an unspoken backup.");
-
-  const total = manifest.chunks.length + manifest.images.length;
-  let done = 0;
-  const ids = new Set(manifest.voicemails.map((v) => v.id));
-  // replace audio for voicemails being restored so chunks never duplicate
-  await db.chunks
-    .where('voicemailId')
-    .anyOf([...ids])
-    .delete();
-
-  for (const c of manifest.chunks) {
-    const data = files.get(c.file);
-    if (!data) continue;
-    await db.chunks.add({
-      voicemailId: c.voicemailId,
-      segmentId: c.segmentId,
-      seq: c.seq,
-      ms: c.ms,
-      peaks: c.peaks,
-      blob: new Blob([data as BlobPart], { type: c.type }),
+      (async () => {
+        const reader = file.stream().getReader();
+        let read = 0;
+        for (;;) {
+          const { value, done: end } = await reader.read();
+          if (end) break;
+          read += value.length;
+          unzip.push(value, false);
+          await writes; // don't read faster than we can save
+          if (!manifest) onProgress({ done: read, total: file.size, label: 'opening your backup' });
+        }
+        unzip.push(new Uint8Array(0), true);
+        inputDone = true;
+        maybeDone();
+      })().catch(reject);
     });
-    onProgress({ done: ++done, total, label: 'putting your voice back' });
+    if (!manifest) throw new Error("this doesn't look like an unspoken backup.");
+    // every piece of audio the backup lists must have arrived, or we'd be swapping good audio for a partial copy
+    if (addedChunkKeys.length < (manifest as Manifest).chunks.length) throw new Error('incomplete backup');
+  } catch (err) {
+    // undo a half-finished restore: drop what we added, keep what was there
+    await db.chunks.bulkDelete(addedChunkKeys);
+    throw err instanceof Error && err.message.includes('unspoken backup') ? err : new Error("that backup couldn't be restored. nothing was changed.");
   }
-  for (const i of manifest.images) {
-    const data = files.get(i.file);
-    if (!data) continue;
-    await db.images.put({ id: i.id, createdAt: i.createdAt, blob: new Blob([data as BlobPart], { type: i.type }) });
-    onProgress({ done: ++done, total, label: 'putting your photos back' });
-  }
-  await db.voicemails.bulkPut(manifest.voicemails.map((v) => (v.status === 'recording' ? { ...v, status: 'draft' as const } : v)));
-  await db.collections.bulkPut(manifest.collections);
-  await db.settings.bulkPut(manifest.settings.filter((s) => !EXCLUDED_SETTINGS.has(s.key)));
-  return { voicemails: manifest.voicemails.length };
+
+  const m = manifest as Manifest;
+  await db.transaction('rw', [db.chunks, db.voicemails, db.collections, db.settings], async () => {
+    await db.chunks.bulkDelete(oldChunkKeys);
+    await db.voicemails.bulkPut(m.voicemails.map((v) => (v.status === 'recording' ? { ...v, status: 'draft' as const } : v)));
+    await db.collections.bulkPut(m.collections);
+    await db.settings.bulkPut(m.settings.filter((s) => !EXCLUDED_SETTINGS.has(s.key)));
+  });
+  return { voicemails: m.voicemails.length };
 }

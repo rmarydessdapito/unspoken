@@ -1,8 +1,9 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { db } from '../db/db';
-import { deleteImage, deleteVoicemail, isLocked, markPlayed, saveImage, updateVoicemail } from '../db/repo';
+import { deleteImage, isLocked, markPlayed, moveToDeleted, restoreDeleted, saveImage, updateVoicemail } from '../db/repo';
+import { SealedView, UnlockReveal } from '../components/FutureMe';
 import { CollectionPicker } from '../components/CollectionPicker';
 import { Cover } from '../components/Cover';
 import { CoverPicker } from '../components/CoverPicker';
@@ -39,11 +40,6 @@ export function Detail() {
   const locked = vm ? isLocked(vm, now) : false;
   const current = snap.voicemailId === id;
 
-  // first time a future-me voicemail is opened after unlocking
-  useEffect(() => {
-    if (vm && vm.unlockAt && !locked && !vm.unlockSeen) updateVoicemail(vm.id, { unlockSeen: true });
-  }, [vm, locked]);
-
   if (vm === undefined) return <main className="screen" />;
   if (!vm || vm.status === 'recording') {
     return (
@@ -53,15 +49,40 @@ export function Detail() {
       </main>
     );
   }
+  if (vm.status === 'deleted') {
+    return (
+      <main className="screen">
+        <PageHeader title="recently deleted" back />
+        <p className="empty">
+          this voicemail is in recently deleted.{' '}
+          <button
+            className="link"
+            onClick={async () => {
+              await restoreDeleted(vm.id);
+              toast('restored.');
+            }}
+          >
+            restore it
+          </button>{' '}
+          to listen again.
+        </p>
+      </main>
+    );
+  }
   if (locked) {
     return (
       <main className="screen detail sealed">
         <PageHeader title="for future me" back />
-        <div className="sealed-envelope">
-          <Icon name="envelope" size={56} />
-          <p className="serif display-sm">this one's sealed.</p>
-          <p className="muted">future you left something here. it opens on {formatDate(vm.unlockAt!)}.</p>
-        </div>
+        <SealedView vm={vm} />
+      </main>
+    );
+  }
+  // first time opening a future-me voicemail after its day arrives
+  if (vm.unlockAt != null && !vm.unlockSeen) {
+    return (
+      <main className="screen detail">
+        <PageHeader title="" back />
+        <UnlockReveal vm={vm} onOpen={() => updateVoicemail(vm.id, { unlockSeen: true })} />
       </main>
     );
   }
@@ -324,13 +345,13 @@ export function Detail() {
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         title="delete this voicemail?"
-        body="the recording, its artwork and photos will be gone for good. collections it was in will stay."
-        confirmLabel="delete forever"
+        body="it moves to recently deleted, where you can restore it for 30 days. after that it's gone for good."
+        confirmLabel="delete"
         danger
         onConfirm={async () => {
           if (snap.voicemailId === vm.id) player.unload();
-          await deleteVoicemail(vm.id);
-          toast('deleted.');
+          await moveToDeleted(vm.id);
+          toast('moved to recently deleted.');
           nav('/library', { replace: true });
         }}
       />

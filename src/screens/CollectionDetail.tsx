@@ -5,6 +5,8 @@ import { db } from '../db/db';
 import { addToCollection, deleteCollection, deleteImage, isLocked, moveInCollection, removeFromCollection, saveImage } from '../db/repo';
 import type { Voicemail } from '../db/types';
 import { Cover } from '../components/Cover';
+import { CollectionCover } from '../components/CollectionCover';
+import { player } from '../lib/player';
 import { CoverPicker } from '../components/CoverPicker';
 import { Icon } from '../components/Icon';
 import { Confirm, Sheet } from '../components/Sheet';
@@ -12,6 +14,15 @@ import { useToast } from '../components/Toast';
 import { PlayButton, VoicemailRow } from '../components/VoicemailItem';
 import { displayTitle, formatDuration, plural } from '../lib/format';
 import { PageHeader } from './parts';
+
+function shuffled<T>(list: T[]): T[] {
+  const a = [...list];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 export function CollectionDetail() {
   const { id = '' } = useParams();
@@ -22,10 +33,11 @@ export function CollectionDetail() {
     const c = await db.collections.get(id);
     if (!c) return [];
     const list = await db.voicemails.bulkGet(c.voicemailIds);
-    return list.filter((v): v is Voicemail => !!v);
+    return list.filter((v): v is Voicemail => !!v && v.status === 'saved');
   }, [id]);
   const allSaved = useLiveQuery(() => db.voicemails.where('status').equals('saved').reverse().sortBy('recordedAt'), []) ?? [];
   const [editOpen, setEditOpen] = useState(false);
+  const playable = (members ?? []).filter((v) => !isLocked(v));
   const [addOpen, setAddOpen] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [title, setTitle] = useState('');
@@ -72,7 +84,7 @@ export function CollectionDetail() {
             await deleteImage(old);
           }}
         >
-          <Cover imageId={col.coverId} seed={col.id + 'c'} title={col.title} size="lg" />
+          <CollectionCover collection={col} size="lg" />
         </CoverPicker>
       </div>
       <span className="eyebrow center">collection</span>
@@ -81,6 +93,32 @@ export function CollectionDetail() {
         {plural(col.voicemailIds.length, 'voicemail')} · {formatDuration(total)}
       </p>
       {col.description && <p className="detail-desc">{col.description}</p>}
+
+      {playable.length > 0 && (
+        <div className="btn-row center-row collection-actions">
+          <button className="btn btn-gold" onClick={() => player.playQueue(playable)}>
+            <Icon name="play" fill="currentColor" strokeWidth={0} size={16} /> play all
+          </button>
+          {playable.length > 2 && (
+            <button className="btn btn-ghost" onClick={() => player.playQueue(shuffled(playable))}>
+              <Icon name="shuffle" size={16} /> shuffle
+            </button>
+          )}
+          {(members?.length ?? 0) > 1 && (
+            <button
+              className="btn btn-ghost"
+              onClick={async () => {
+                const ordered = [...(members ?? [])].sort((a, b) => a.recordedAt - b.recordedAt).map((v) => v.id);
+                const rest = col.voicemailIds.filter((v) => !ordered.includes(v));
+                await db.collections.update(col.id, { voicemailIds: [...ordered, ...rest], updatedAt: Date.now() });
+                toast('arranged oldest to newest.');
+              }}
+            >
+              arrange by date
+            </button>
+          )}
+        </div>
+      )}
 
       <button className="new-col" onClick={() => setAddOpen(true)}>
         <Icon name="plus" /> add voicemails
