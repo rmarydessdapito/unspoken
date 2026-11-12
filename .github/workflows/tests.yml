@@ -34,9 +34,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm run test:e2e
+      - name: end-to-end test (phone size)
+        run: npm run test:e2e
         env:
           CHROME_PATH: /usr/bin/google-chrome
+      - name: end-to-end test (desktop size)
+        run: npm run test:e2e
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          VIEWPORT: 1440x900
       # keep the screenshots if something fails, so it's easy to see what went wrong
       - uses: actions/upload-artifact@v6
         if: failure()
