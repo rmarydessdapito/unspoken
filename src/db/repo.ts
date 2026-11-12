@@ -40,6 +40,7 @@ export function newVoicemail(partial: Partial<Voicemail> = {}): Voicemail {
     unlockSeen: false,
     lastPlayedAt: null,
     playCount: 0,
+    stoppedEarly: null,
     ...partial,
   };
 }
