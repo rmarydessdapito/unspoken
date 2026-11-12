@@ -26,6 +26,7 @@ The idea came from how hard it can be to write down what you feel. Sometimes it'
 - **Future me**, which locks a recording until a date you choose.
 - **Passcode lock**, with face or fingerprint unlock on supported devices.
 - **Backup and restore** using a single `.zip` file.
+- **Works on any screen.** Phones get a bottom bar, and tablets and computers get a wider layout with a sidebar.
 
 ## Technologies Used
 
