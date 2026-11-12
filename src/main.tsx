@@ -13,7 +13,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { LockGate } from './components/LockGate';
 import { ToastProvider } from './components/Toast';
 import { requestPersistentStorage } from './db/db';
-import { getSettings, recoverInterruptedRecordings } from './db/repo';
+import { getSettings, purgeOldDeleted, recoverInterruptedRecordings } from './db/repo';
 
 async function boot() {
   const root = createRoot(document.getElementById('root')!);
@@ -22,6 +22,8 @@ async function boot() {
   try {
     // never lose a recording: anything interrupted last time becomes an unfinished thought
     recovered = await recoverInterruptedRecordings();
+    // voicemails in recently deleted for more than 30 days are erased for good
+    await purgeOldDeleted().catch(() => 0);
     const s = await getSettings();
     initiallyLocked = !!s.passcodeHash;
     if (s.onboarded) requestPersistentStorage();

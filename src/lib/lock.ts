@@ -83,3 +83,13 @@ export async function verifyBiometric(credentialId: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * How long to wait after a wrong passcode. The first 4 mistakes are free (typos happen);
+ * after that the wait grows, so guessing a 4-digit code by trying every number would take months.
+ */
+export function lockoutDelayMs(failedAttempts: number): number {
+  if (failedAttempts < 5) return 0;
+  const steps = [30_000, 60_000, 2 * 60_000, 5 * 60_000];
+  return steps[failedAttempts - 5] ?? 15 * 60_000;
+}
