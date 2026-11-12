@@ -8,7 +8,8 @@
  * Needs Google Chrome or Chromium installed (set CHROME_PATH if it isn't at a standard location).
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import puppeteer from 'puppeteer-core';
 import type { ElementHandle, Page } from 'puppeteer-core';
 
@@ -391,6 +392,291 @@ try {
   await page.goto(BASE, { waitUntil: 'networkidle0' });
   await sleep(600);
   await shot('13-home');
+
+
+  // ================================================================ small details that make it feel finished
+  // helper: run code inside the page against the app's real IndexedDB (self-contained functions only)
+  const idbRun = (fn: (idb: IDBDatabase, arg: any, wrap: <T>(r: IDBRequest<T>) => Promise<T>) => Promise<any>, arg?: any): Promise<any> =>
+    page.evaluate(
+      (src, a) =>
+        new Promise((resolve, reject) => {
+          const req = indexedDB.open('unspoken');
+          req.onerror = () => reject(req.error);
+          req.onsuccess = () => {
+            const idb = req.result;
+            const wrap = (r: IDBRequest) => new Promise((res, rej) => ((r.onsuccess = () => res(r.result)), (r.onerror = () => rej(r.error))));
+            new Function('idb', 'arg', 'wrap', `return (${src})(idb, arg, wrap)`)(idb, a, wrap).then(
+              (v: any) => (idb.close(), resolve(v)),
+              (e: Error) => (idb.close(), reject(e)),
+            );
+          };
+        }),
+      fn.toString(),
+      arg,
+    );
+  await page.evaluateOnNewDocument(() => {
+    try {
+      const raw = sessionStorage.getItem('fakeStorage');
+      if (raw && navigator.storage) {
+        if (raw === 'unsupported') Object.defineProperty(navigator.storage, 'estimate', { value: undefined, configurable: true });
+        else {
+          const est = JSON.parse(raw);
+          Object.defineProperty(navigator.storage, 'estimate', { value: async () => est, configurable: true });
+        }
+      }
+      if (sessionStorage.getItem('watchFlash')) {
+        const look = () => {
+          if (document.body && /nothing here yet/.test(document.body.innerText)) sessionStorage.setItem('flashed', '1');
+        };
+        new MutationObserver(look).observe(document, { childList: true, subtree: true, characterData: true });
+      }
+      delete (window as any).showSaveFilePicker; // headless Chrome can't show the save dialog; use the download path phones use
+    } catch {
+      /* ignore */
+    }
+  });
+  const go = async (path: string) => {
+    await page.goto(BASE + path, { waitUntil: 'networkidle0' });
+    await sleep(500);
+  };
+  const setting = (key: string, value: any) => idbRun(async (idb, a, wrap) => wrap(idb.transaction('settings', 'readwrite').objectStore('settings').put({ key: a.key, value: a.value })), { key, value });
+  const unsetting = (key: string) => idbRun(async (idb, k, wrap) => wrap(idb.transaction('settings', 'readwrite').objectStore('settings').delete(k)), key);
+  const finishAndKeep = async () => {
+    await clickText('finish', '.ctrl');
+    await page.waitForFunction(() => document.body.innerText.includes('you got it out.'), { timeout: 15_000 });
+    await clickText('keep it');
+    await page.waitForSelector('.player-card', { timeout: 8000 });
+  };
+
+  // ---- gentle backup reminder
+  await idbRun(async (idb, _a, wrap) => {
+    const store = (m: IDBTransactionMode) => idb.transaction('voicemails', m).objectStore('voicemails');
+    const all: any[] = await wrap(store('readonly').getAll());
+    const saved = all.filter((v) => v.status === 'saved');
+    for (let i = saved.length; i < 6; i++) await wrap(store('readwrite').put({ ...saved[0], id: `seed-${i}`, title: `seed ${i}`, unlockAt: null }));
+  });
+  await unsetting('lastBackupAt');
+  await unsetting('backupNudgeDismissedAt');
+  await go('/');
+  check('home gently suggests a backup when there is none', !!(await page.$('.nudge')) && (await text()).includes('back them up'));
+  check('the reminder is small and does not hide the record button', !!(await page.$('.record-hero')) && ((await page.$eval('.nudge', (e) => e.getBoundingClientRect().height)) as number) < 90);
+  await tap('[aria-label="dismiss backup reminder"]');
+  check('it can be dismissed in one tap', !(await page.$('.nudge')));
+  await go('/');
+  check('and stays dismissed after a reload', !(await page.$('.nudge')));
+  await unsetting('backupNudgeDismissedAt');
+  await setting('lastBackupAt', Date.now() - 2 * 86_400_000);
+  await go('/');
+  check('no reminder right after a recent backup', !(await page.$('.nudge')));
+  await unsetting('lastBackupAt');
+  await go('/');
+  await clickText('back them up');
+  await sleep(700);
+  check('the reminder takes you to the backup section', page.url().endsWith('/you') && (await page.evaluate(() => document.activeElement?.id)) === 'backup');
+
+  // ---- no "nothing here yet" flash while the library loads
+  await page.evaluate(() => sessionStorage.setItem('watchFlash', '1'));
+  for (const path of ['/', '/library']) {
+    await page.evaluate(() => sessionStorage.removeItem('flashed'));
+    await go(path);
+    check(`${path === '/' ? 'home' : 'library'} never flashes an empty message before your voicemails appear`, (await page.evaluate(() => sessionStorage.getItem('flashed'))) === null);
+  }
+  await page.evaluate(() => sessionStorage.removeItem('watchFlash'));
+
+  // ---- storage warning before recording
+  await page.evaluate(() => sessionStorage.setItem('fakeStorage', JSON.stringify({ usage: 960e6, quota: 1e9 })));
+  await go('/record?start=1');
+  await page.waitForSelector('.notice', { timeout: 5000 });
+  const lowText = await text();
+  check('low space is mentioned before recording starts', lowText.includes('space is getting tight') && !(await page.$('.rec-badge')));
+  check('it is honest that this is only an estimate', lowText.includes("that's only an estimate") && lowText.includes('might not save'));
+  await clickText('record anyway');
+  await page.waitForSelector('.rec-badge', { timeout: 8000 });
+  check('you can still record anyway', true);
+  await sleep(2200);
+  await finishAndKeep();
+
+  await page.evaluate(() => sessionStorage.setItem('fakeStorage', 'unsupported'));
+  await go('/record?start=1');
+  await page.waitForSelector('.rec-badge', { timeout: 8000 });
+  check('an unsupported storage estimate never blocks or warns', !(await page.$('.notice')));
+  await sleep(2200);
+  const status = () => page.$eval('main p.sr-only[role="status"]', (e) => e.textContent.trim());
+  check('screen readers hear that recording started', (await status()) === 'recording.');
+  await clickText('pause', '.ctrl');
+  check('…that it paused', (await status()) === 'recording paused.');
+  await clickText('resume', '.ctrl');
+  check('…and that it resumed', (await status()) === 'recording resumed.');
+  check('the timer itself is not read out every second', (await page.$eval('.timer', (e) => e.getAttribute('aria-live'))) === null);
+  await sleep(1500);
+  await finishAndKeep();
+
+  await page.evaluate(() => sessionStorage.setItem('fakeStorage', JSON.stringify({ usage: 5e6, quota: 5e9 })));
+  await go('/record?start=1');
+  await page.waitForSelector('.rec-badge', { timeout: 8000 });
+  check('plenty of space: no warning', !(await page.$('.notice')));
+  await sleep(1500);
+  await finishAndKeep();
+  await page.evaluate(() => sessionStorage.removeItem('fakeStorage'));
+
+  // ---- playback recovery
+  const target = await dbQuery((v) => v.find((x) => x.status === 'saved' && x.segments.length === 1 && x.unlockAt == null && x.durationMs > 3000 && !x.id.startsWith('seed-')));
+  const readChunks = () =>
+    idbRun(async (idb, id, wrap) => {
+      const all: any[] = await wrap(idb.transaction('chunks').objectStore('chunks').getAll());
+      const out: any[] = [];
+      for (const c of all.filter((x) => x.voicemailId === id)) {
+        const bytes = new Uint8Array(await c.blob.arrayBuffer());
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        out.push({ id: c.id, voicemailId: c.voicemailId, segmentId: c.segmentId, seq: c.seq, ms: c.ms, peaks: c.peaks, type: c.blob.type, b64: btoa(bin) });
+      }
+      return out;
+    }, target.id);
+  const putChunks = (list: any[], garbage = false) =>
+    idbRun(async (idb, a, wrap) => {
+      const store = idb.transaction('chunks', 'readwrite').objectStore('chunks');
+      for (const c of a.list) {
+        const blob = a.garbage ? new Blob(['this is not audio'], { type: c.type }) : new Blob([Uint8Array.from(atob(c.b64), (ch) => ch.charCodeAt(0))], { type: c.type });
+        await wrap(store.put({ id: c.id, voicemailId: c.voicemailId, segmentId: c.segmentId, seq: c.seq, ms: c.ms, peaks: c.peaks, blob }));
+      }
+    }, { list, garbage });
+  const removeChunks = () =>
+    idbRun(async (idb, id, wrap) => {
+      const store = idb.transaction('chunks', 'readwrite').objectStore('chunks');
+      const all: any[] = await wrap(store.getAll());
+      for (const c of all.filter((x) => x.voicemailId === id)) await wrap(store.delete(c.id));
+    }, target.id);
+  const getRow = () => idbRun(async (idb, id, wrap) => wrap(idb.transaction('voicemails').objectStore('voicemails').get(id)), target.id);
+  const beforeRow = await getRow();
+  const originals = await readChunks();
+  check('found a recording to test recovery with', originals.length > 0, `${originals.length} chunks`);
+
+  // backup first, while everything is healthy
+  const dl = resolvePath(OUT, 'downloads');
+  rmSync(dl, { recursive: true, force: true });
+  mkdirSync(dl, { recursive: true });
+  const downloads = await page.createCDPSession();
+  await downloads.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dl });
+  await go('/you');
+  await clickText('back up everything');
+  await page.waitForFunction(() => document.body.innerText.includes('backup saved'), { timeout: 30_000 });
+  await sleep(800);
+  const zips = readdirSync(dl).filter((f) => f.endsWith('.zip'));
+  check('a backup file is downloaded and the screen says so', zips.length === 1 && statSync(`${dl}/${zips[0]}`).size > 1000, zips.join(','));
+  check('the screen shows when the last backup was made', (await text()).includes('last backup:'));
+  await go('/');
+  check('the reminder is gone once there is a backup', !(await page.$('.nudge')));
+
+  // audio that can't be decoded
+  await putChunks(originals, true);
+  await go(`/voicemail/${target.id}`);
+  await tap('.play-btn.play-lg');
+  await page.waitForSelector('.playback-error', { timeout: 6000 });
+  const errText = await page.$eval('.playback-error', (e) => (e as HTMLElement).innerText);
+  check('a playback problem is explained, with a way to try again', errText.includes('try again'), errText.replace(/\n/g, ' | '));
+  check('a download is offered because the audio is still saved', errText.includes('download it instead'));
+  await clickText('try again', '.playback-error button');
+  await page.waitForFunction(() => document.querySelector('.playback-error')?.textContent?.includes("still can't play it"), { timeout: 9000 });
+  check('a failed retry says so, and that the recording is safe', (await text()).includes('your recording is safe'));
+  const afterRow = await getRow();
+  const keep = (r: any) => JSON.stringify([r.title, r.description, r.durationMs, r.segments, r.coverId, r.mood, r.tags, r.status]);
+  check('the recording and its details are untouched by a failed retry', keep(afterRow) === keep(beforeRow) && (await readChunks()).length === originals.length);
+  // the audio comes back (as if a hiccup passed); retry now works and carries on
+  await putChunks(originals, false);
+  await clickText('try again', '.playback-error button');
+  await page.waitForFunction(() => !document.querySelector('.playback-error'), { timeout: 9000 });
+  check('retry recovers once the audio can be read', true);
+  await tap('.play-btn.play-lg');
+  await sleep(1500);
+  const playedTo = await page.$eval('.player-times span', (e) => (e as HTMLElement).textContent);
+  check('…and it plays again', playedTo !== '00:00', `at ${playedTo}`);
+
+  // audio missing entirely: no download offered (there is nothing to download)
+  await removeChunks();
+  await go(`/voicemail/${target.id}`);
+  await tap('.play-btn.play-lg');
+  await page.waitForSelector('.playback-error', { timeout: 6000 });
+  check('no download is offered when the audio is gone', !(await text()).includes('download it instead'));
+
+  // restore from the backup made earlier: the audio returns
+  await go('/you');
+  const restoreInput = (await page.$('input[type="file"]')) as ElementHandle<HTMLInputElement>;
+  const junk = resolvePath(OUT, 'not-a-backup.txt');
+  writeFileSync(junk, 'hello, i am not a backup');
+  await restoreInput.uploadFile(junk);
+  await page.waitForSelector('.sheet');
+  check('restoring asks first, and explains what will happen', (await text()).includes('restore this backup?') && (await text()).includes('nothing else is removed'));
+  await clickText('restore', '.sheet button.btn-gold');
+  await page.waitForFunction(() => /doesn.t look like an unspoken backup|nothing was changed/.test(document.body.innerText), { timeout: 8000 });
+  check('restoring a wrong file is refused with a clear message', true);
+  check('…and changes nothing', (await readChunks()).length === 0);
+  await (await page.$('input[type="file"]'))!.uploadFile(`${dl}/${zips[0]}`);
+  await page.waitForSelector('.sheet');
+  await clickText('restore', '.sheet button.btn-gold');
+  await page.waitForFunction(() => document.body.innerText.includes('restored'), { timeout: 30_000 });
+  check('restoring a real backup says how much came back', /restored \d+ voicemails/.test(await text()));
+  check('the missing audio is back after the restore', (await readChunks()).length === originals.length);
+  await go(`/voicemail/${target.id}`);
+  await tap('.play-btn.play-lg');
+  await sleep(1500);
+  check('…and plays', (await page.$eval('.player-times span', (e) => (e as HTMLElement).textContent)) !== '00:00');
+
+  // ---- keyboard: dialogs keep focus inside, and close with Escape
+  await clickText('collect');
+  await page.waitForSelector('.sheet');
+  let stayed = true;
+  for (let i = 0; i < 14; i++) {
+    await page.keyboard.press('Tab');
+    stayed = stayed && (await page.evaluate(() => !!document.activeElement?.closest('.sheet')));
+  }
+  check('Tab stays inside an open dialog', stayed);
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('Tab');
+  await page.keyboard.up('Shift');
+  check('Shift+Tab does too', await page.evaluate(() => !!document.activeElement?.closest('.sheet')));
+  await page.keyboard.press('Escape');
+  await sleep(300);
+  check('Escape closes it', !(await page.$('.sheet')));
+
+  // ---- the smallest phones: nothing sideways, everything tappable
+  await page.setViewport({ width: 320, height: 640, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  for (const path of ['/', '/library', '/library?tab=collections', '/echoes', '/you', '/record', `/voicemail/${target.id}`, `/voicemail/${target.id}/customize`]) {
+    await go(path);
+    const m = await page.evaluate(() => {
+      const small: string[] = [];
+      for (const el of document.querySelectorAll<HTMLElement>('button, a[href], select, [role=tab], [role=radio]')) {
+        if (el.closest('.sr-only') || (el.tagName === 'A' && getComputedStyle(el).display === 'inline' && el.closest('p'))) continue;
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const reach = (dx: number, dy: number) => {
+          let n = 0;
+          for (let i = 1; i <= 16; i++) {
+            const t = document.elementFromPoint(r.left + r.width / 2 + dx * (r.width / 2 + i), r.top + r.height / 2 + dy * (r.height / 2 + i));
+            if (t && (t === el || el.contains(t))) n = i;
+            else break;
+          }
+          return n;
+        };
+        const w = r.width + reach(-1, 0) + reach(1, 0);
+        const h = r.height + reach(0, -1) + reach(0, 1);
+        if (w < 42.5 || h < 42.5) small.push(`${el.className || el.tagName} ${Math.round(w)}x${Math.round(h)}`);
+      }
+      window.scrollTo(0, 0);
+      const vwNow = document.documentElement.clientWidth;
+      const wide: string[] = [];
+      for (const el of document.querySelectorAll<HTMLElement>('main *')) {
+        const r = el.getBoundingClientRect();
+        if (r.width && r.right > vwNow + 1 && !el.closest('.shelf')) wide.push(`${el.tagName.toLowerCase()}.${String(el.className).split(' ')[0]} right=${Math.round(r.right)}`);
+      }
+      return { sideways: document.documentElement.scrollWidth - vwNow, small, wide: wide.slice(0, 4) };
+    });
+    check(`320px ${path.split('/')[1] || 'home'}${path.includes('customize') ? ' (edit)' : ''}: no sideways scroll`, m.sideways <= 0, `${m.sideways}px ${m.wide.join('; ')}`);
+    check(`320px ${path.split('/')[1] || 'home'}${path.includes('customize') ? ' (edit)' : ''}: everything tappable is at least 44px`, m.small.length === 0, m.small.slice(0, 3).join('; '));
+  }
+  await page.setViewport({ width: vw, height: vh, deviceScaleFactor: vw > 800 ? 1 : 2 });
+  await go('/');
 
   // ---------------------------------------------------------------- long recording (optional)
   if (LONG_MINUTES > 0) {
