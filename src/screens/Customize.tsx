@@ -1,16 +1,17 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { db } from '../db/db';
-import { deleteImage, deleteVoicemail, saveImage, updateVoicemail } from '../db/repo';
+import { deleteImage, isLocked, moveToDeleted, saveImage, updateVoicemail } from '../db/repo';
 import type { Voicemail } from '../db/types';
 import { Cover } from '../components/Cover';
+import { Icon } from '../components/Icon';
 import { CoverPicker, PhotoAdder } from '../components/CoverPicker';
 import { FutureMePicker, MoodPicker, PhotoStrip, TagInput } from '../components/Fields';
-import { Confirm } from '../components/Sheet';
+import { Confirm, Sheet } from '../components/Sheet';
 import { useToast } from '../components/Toast';
 import { useSettings } from '../hooks/useSettings';
-import { defaultTitle, formatDuration, fromDateTimeInputs, toDateInput, toTimeInput } from '../lib/format';
+import { defaultTitle, formatDate, formatDuration, formatTime, fromDateTimeInputs, toDateInput, toTimeInput, untilText } from '../lib/format';
 import { allTags } from '../lib/library';
 import { PageHeader } from './parts';
 
@@ -31,6 +32,8 @@ export function Customize() {
   const [time, setTime] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [saving, setSaving] = useState(false);
+  const justSealed = useRef(false);
+  const [sealOpen, setSealOpen] = useState(false);
 
   useEffect(() => {
     if (vm && !form) {
@@ -41,7 +44,7 @@ export function Customize() {
   }, [vm, form]);
 
   if (vm === undefined && form === null) return <main className="screen" />;
-  if (!vm || !form) {
+  if (!vm || !form || vm.status === 'deleted') {
     return (
       <main className="screen">
         <PageHeader title="not here" back />
@@ -49,11 +52,26 @@ export function Customize() {
       </main>
     );
   }
+  // a sealed voicemail can't be read or edited until it opens (justSealed: we're the ones who just sealed it)
+  if (isLocked(vm) && !justSealed.current) {
+    return (
+      <main className="screen">
+        <PageHeader title="for future me" back />
+        <p className="empty">this one's sealed. its details stay hidden until it opens.</p>
+      </main>
+    );
+  }
 
   const set = <K extends keyof Voicemail>(k: K, v: Voicemail[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
 
-  const save = async () => {
+  const save = async (sealConfirmed = false) => {
+    const sealing = form.unlockAt != null && form.unlockAt > Date.now() && form.unlockAt !== vm.unlockAt;
+    if (sealing && !sealConfirmed) {
+      setSealOpen(true);
+      return;
+    }
     setSaving(true);
+    if (sealing) justSealed.current = true;
     try {
       await updateVoicemail(vm.id, {
         title: form.title.trim().slice(0, 120),
@@ -66,9 +84,13 @@ export function Customize() {
         recordedAt: fromDateTimeInputs(date, time) ?? vm.recordedAt,
         status: 'saved',
       });
-      toast(isNew ? 'voicemail saved. this thought has somewhere to go now.' : 'saved.');
-      if (form.unlockAt && form.unlockAt > Date.now()) nav('/library', { replace: true });
-      else nav(`/voicemail/${vm.id}`, { replace: true });
+      if (sealing) {
+        toast(`sealed until ${formatDate(form.unlockAt!)}. future you will find it there.`);
+        nav('/echoes#future-me', { replace: true });
+      } else {
+        toast(isNew ? 'voicemail saved. this thought has somewhere to go now.' : 'saved.');
+        nav(`/voicemail/${vm.id}`, { replace: true });
+      }
     } finally {
       setSaving(false);
     }
@@ -206,16 +228,48 @@ export function Customize() {
         </form>
       </div>
 
+      <Sheet open={sealOpen} onClose={() => setSealOpen(false)} title="seal it for future you?">
+        {form.unlockAt && (
+          <>
+            <div className="seal-preview">
+              <Icon name="envelope" size={40} />
+              <p className="serif seal-date">{formatDate(form.unlockAt)}</p>
+              <p className="muted small">
+                {formatTime(form.unlockAt)} · {untilText(form.unlockAt)}
+              </p>
+            </div>
+            <p className="muted sheet-body">
+              once it's sealed, you won't be able to listen to it, read its title or change its details until then. you can still push the date further
+              away, or delete it without opening it.
+            </p>
+          </>
+        )}
+        <div className="sheet-actions">
+          <button className="btn btn-ghost" onClick={() => setSealOpen(false)}>
+            not yet
+          </button>
+          <button
+            className="btn btn-gold"
+            onClick={() => {
+              setSealOpen(false);
+              save(true);
+            }}
+          >
+            seal it
+          </button>
+        </div>
+      </Sheet>
+
       <Confirm
         open={confirmDiscard}
         onClose={() => setConfirmDiscard(false)}
         title="let this one go?"
-        body="the recording will be deleted for good. you can't get it back."
-        confirmLabel="delete it"
+        body="it moves to recently deleted, where you can still restore it for 30 days."
+        confirmLabel="let it go"
         danger
         onConfirm={async () => {
-          await deleteVoicemail(vm.id);
-          toast('let go.');
+          await moveToDeleted(vm.id);
+          toast('moved to recently deleted.');
           nav('/', { replace: true });
         }}
       />

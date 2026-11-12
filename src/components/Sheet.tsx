@@ -8,7 +8,24 @@ export function Sheet({ open, onClose, title, children }: { open: boolean; onClo
   closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && closeRef.current();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') return closeRef.current();
+      // keep Tab inside the sheet, so keyboard users don't wander into the page behind it
+      if (e.key !== 'Tab' || !ref.current) return;
+      const focusable = [...ref.current.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(
+        (el) => !el.hasAttribute('disabled') && el.offsetParent !== null,
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener('keydown', onKey);
     // focus the sheet once when it opens (unless something inside asked for autofocus)
     if (!ref.current?.contains(document.activeElement)) ref.current?.focus();
