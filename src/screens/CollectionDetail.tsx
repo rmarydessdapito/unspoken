@@ -29,7 +29,7 @@ export function CollectionDetail() {
   const { id = '' } = useParams();
   const nav = useNavigate();
   const toast = useToast();
-  const col = useLiveQuery(() => db.collections.get(id), [id]);
+  const col = useLiveQuery(async () => (await db.collections.get(id)) ?? null, [id]); // null = not found (undefined = still loading)
   const members = useLiveQuery(async () => {
     const c = await db.collections.get(id);
     if (!c) return [];
