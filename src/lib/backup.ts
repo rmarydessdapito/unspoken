@@ -602,12 +602,18 @@ export interface RestoreResult {
 }
 
 const FAILED = "that backup couldn't be restored. nothing was changed.";
+const UNDO_PENDING = "that backup couldn't be restored, and putting things back isn't finished yet. close and reopen unspoken so it can finish.";
+const UNRESOLVED = 'a previous restore is still being undone. close and reopen unspoken, then try again.';
 
 /**
  * Apply a restore. Everything added is journaled first; any failure undoes every addition, and nothing that was
  * already here is ever deleted. The journal is cleared in the same transaction that makes the restore visible.
  */
 export async function restoreBackup(file: Blob, plan: RestorePlan, options: RestoreOptions, onProgress: (p: BackupProgress) => void): Promise<RestoreResult> {
+  // a journal still here means an earlier restore was never undone (its own undo failed, or the app died): starting
+  // another would overwrite the only record of what to remove. It is cleared only by a confirmed undo, at next start.
+  if (await db.settings.get(RESTORE_JOURNAL_KEY)) throw new Error(UNRESOLVED);
+
   // recompute against the device as it is *now*, in case anything changed while the preview was open
   const local = await loadLocalState();
   const a = computeActions(plan.manifest, local, options);
@@ -621,8 +627,14 @@ export async function restoreBackup(file: Blob, plan: RestorePlan, options: Rest
     chunkKeys: [...a.chunks.values()].filter((c) => local.voicemails.has(c.voicemailId)).map((c) => [c.voicemailId, c.segmentId, c.seq]),
     imageIds: [...a.images.values()].map((i) => i.id),
   };
-  // written before the first change: a crash from here on is undone at next start
-  await db.settings.put({ key: RESTORE_JOURNAL_KEY, value: journal });
+  // written before the first change: a crash from here on is undone at next start.
+  // If it can't be written nothing has been touched yet, so there is nothing to undo — and without it we must not begin.
+  try {
+    await db.settings.put({ key: RESTORE_JOURNAL_KEY, value: journal });
+  } catch (err) {
+    console.error('could not write the restore journal', err);
+    throw new Error(FAILED);
+  }
 
   const total = a.chunks.size + a.images.size;
   let done = 0;
@@ -672,10 +684,15 @@ export async function restoreBackup(file: Blob, plan: RestorePlan, options: Rest
       await db.settings.delete(RESTORE_JOURNAL_KEY);
     });
   } catch (err) {
-    // put everything back as it was; if even that can't finish now, the journal makes the next start do it
-    await undoRestoreFromJournal(journal).catch((e) => console.error('restore undo is pending until next start', e));
     console.error('restore failed', err);
-    throw new Error(FAILED);
+    // put everything back as it was; if even that can't finish now, the journal makes the next start do it,
+    // and the person is told so instead of being told "nothing was changed"
+    let undone = true;
+    await undoRestoreFromJournal(journal).catch((e) => {
+      undone = false;
+      console.error('restore undo is pending until next start', e);
+    });
+    throw new Error(undone ? FAILED : UNDO_PENDING);
   }
   return { summary: a.summary, nothingToDo: false };
 }

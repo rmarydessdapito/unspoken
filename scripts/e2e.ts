@@ -618,8 +618,12 @@ try {
   check('…including the audio that will be recovered', /recovered:/.test(preview), preview.slice(0, 300).replace(/\n/g, ' | '));
   check('…and nothing was changed yet', (await readChunks()).length === 0);
   await clickText('restore', '.sheet button.btn-gold');
-  await page.waitForFunction(() => /restored: /.test(document.body.innerText), { timeout: 30_000 });
-  check('restoring a real backup says how much came back', /restored: \d+ recovered/.test(await text()));
+  // the wait itself hands back the matched message, so nothing can change between "it appeared" and "we read it"
+  const restoredText = String(
+    await (await page.waitForFunction(() => document.body.innerText.match(/restored: [^.]*\./)?.[0] || false, { timeout: 30_000 })).jsonValue(),
+  );
+  // exactly one voicemail had its audio put back and nothing else: an extra "added" or "updated" must fail this
+  check('restoring a real backup says exactly 1 recovered and nothing else', restoredText === 'restored: 1 recovered.', restoredText);
   check('the missing audio is back after the restore', (await readChunks()).length === originals.length);
   await go(`/voicemail/${target.id}`);
   await tap('.play-btn.play-lg');
