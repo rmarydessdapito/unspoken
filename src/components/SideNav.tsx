@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { tabs } from './BottomNav';
+import { SIDEBAR_PRIVACY_NOTE } from '../lib/disclosures';
 import { Icon } from './Icon';
 
 /** Left-hand navigation for laptops and desktops. Hidden on phones and tablets (see global.css). */
@@ -30,7 +31,7 @@ export function SideNav() {
         </NavLink>
       </nav>
       <p className="side-foot">
-        <Icon name="lock" size={14} /> private by default. everything stays on this device.
+        <Icon name="lock" size={14} /> {SIDEBAR_PRIVACY_NOTE}
       </p>
     </aside>
   );

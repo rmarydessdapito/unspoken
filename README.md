@@ -8,7 +8,7 @@
 
 unspoken is a voice journal. Instead of writing entries, you record them like voicemails to yourself.
 
-The idea came from how hard it can be to write down what you feel. Sometimes it's easier to just talk it out, like leaving a message for someone. With unspoken, you tap one button and speak, and your recording is kept in a private library on your device. No accounts, and nothing gets uploaded.
+The idea came from how hard it can be to write down what you feel. Sometimes it's easier to just talk it out, like leaving a message for someone. With unspoken, you tap one button and speak, and your recording is kept in a private library on your device. No accounts, and unspoken never uploads your recordings.
 
 ## Features
 
@@ -22,8 +22,8 @@ The idea came from how hard it can be to write down what you feel. Sometimes it'
 - **Collections** to group recordings together.
 - **Little echoes**, which bring back an older recording each day.
 - **Future me**, which locks a recording until a date you choose.
-- **Passcode lock**, with face or fingerprint unlock on supported devices.
-- **Backup and restore** using a single `.zip` file.
+- **Passcode lock**, with face or fingerprint unlock on supported devices. This is a screen lock, not encryption (see [Privacy and backups](#privacy-and-backups)).
+- **Backup and restore** using a single `.zip` file. Backups are not encrypted.
 - **Works on any screen.** Phones get a bottom bar, and tablets and computers get a wider layout with a sidebar.
 
 ## Technologies Used
@@ -58,6 +58,31 @@ No database or extra setup is needed.
 3. Add a title, photo, or mood if you want, then tap **keep it**.
 4. Find your recordings in **my unspoken** and tap one to play it.
 5. Use the **you** tab for settings, the passcode, and backups.
+
+## Browser Support
+
+This is a conservative statement of what has actually been checked. The project does not set a minimum browser version.
+
+**Automated coverage (Chromium only).** Every push runs the unit tests (Node, with a simulated database), then an end-to-end test in desktop Chrome at phone size (390x844, plus 320x640 checks) and desktop size (1440x900), using a fake microphone. These runs do not use a real phone, real touch input or a real microphone.
+
+**Not yet tested, so not claimed as supported** (manual testing still needed): Chrome on Android, Safari on iPhone, iPad and Mac, Firefox, and Edge.
+
+**What the app needs.** A secure context (HTTPS, or `localhost`), the microphone (`getUserMedia`), `MediaRecorder` and IndexedDB. Where the browser offers them, it also uses a screen wake lock while recording, a save-file picker for backups (desktop Chrome and Edge), device biometrics (WebAuthn), notifications and speech recognition for optional transcripts.
+
+**Known limitations**
+- Recordings are saved in whichever audio format the browser provides (for example WebM or MP4). Restoring a backup on a different browser or device, and playing it there, has not been tested.
+- How recordings behave when a phone call or another app interrupts the microphone has not been tested on real devices.
+- Browsers can clear a site's saved data, and iPhones and iPads in particular may do so when space is low or a site has not been used for a while. Installing the app to the Home Screen is not a guarantee against this, so keep backups.
+- The install icons are SVG only, so some platforms, such as the iOS Home Screen, may not show the app icon.
+- With live transcripts turned on (off by default), Chrome and Edge send what the microphone hears to the browser's speech service. Recordings themselves are never uploaded by unspoken.
+
+## Privacy and backups
+
+- Your recordings and journal are stored only in your browser's storage on your device, with no accounts, and unspoken never uploads them.
+- Live transcripts are off by default. If you turn them on, your browser's speech-recognition service may process what you say while you record (Chrome and Edge use a vendor service; see Browser Support). Sharing only happens when you tap share and confirm.
+- The **passcode is a screen lock for the app, not encryption.** unspoken does not encrypt recordings, titles, notes or transcripts. Someone with enough access to the browser or device may be able to reach them. Whether that storage is encrypted depends on your device's own security.
+- **Backup files are not encrypted.** The `.zip` holds your recordings as audio plus titles, notes, tags and transcripts in readable form. Keep it somewhere private and secure.
+- On iPhone, open the app in Safari, tap Share, then **Add to Home Screen**. This does not guarantee your saved data will be kept, so make backups from the **you** tab regularly.
 
 ## Project Structure
 

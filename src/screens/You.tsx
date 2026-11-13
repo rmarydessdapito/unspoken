@@ -14,6 +14,21 @@ import { RestorePreview } from '../components/RestorePreview';
 import { formatBytes, formatDate, greeting } from '../lib/format';
 import { ECHO_FREQUENCY_LABELS } from '../lib/library';
 import { biometricAvailable, hashPasscode, registerBiometric, verifyPasscode } from '../lib/lock';
+import {
+  BACKUP_INTRO,
+  BACKUP_NOT_ENCRYPTED_BODY,
+  BACKUP_NOT_ENCRYPTED_HEAD,
+  IOS_BACKUP_REASON,
+  IOS_GUIDANCE_TITLE,
+  IOS_INSTALL_STEPS,
+  isInstalledApp,
+  isIosDevice,
+  LOCAL_ONLY_NOTE,
+  LOCK_IS_NOT_ENCRYPTION,
+  NOT_PERSISTED_NOTE,
+  PERSISTED_NOTE,
+  PERSIST_DENIED_TOAST,
+} from '../lib/disclosures';
 import { askNotificationPermission, notificationsSupported } from '../lib/notify';
 import { transcriptionSupported } from '../lib/transcription';
 import { PageHeader } from './parts';
@@ -98,6 +113,11 @@ export function You() {
       backupPanel.current?.focus({ preventScroll: true });
     }
   }, [routeLocation.state]);
+  const onIos = isIosDevice(navigator);
+  const installed = isInstalledApp({
+    navigatorStandalone: (navigator as unknown as { standalone?: boolean }).standalone,
+    displayModeStandalone: typeof matchMedia === 'function' && matchMedia('(display-mode: standalone)').matches,
+  });
   const [bm, bd] = (s.birthday ?? '-').split('-');
   const maxDay = bm ? DAYS_IN_MONTH[Number(bm) - 1] : 31;
 
@@ -350,10 +370,10 @@ export function You() {
               <p className="fine">anyone who picks up your phone or laptop will need it to open unspoken.</p>
             </>
           )}
-          <p className="fine">
-            everything lives only on this device — no accounts, no profiles, no feed, no one listening. your recordings are protected at rest by your device's
-            own storage encryption. nothing is shared unless you tap share and confirm.
+          <p className="fine" id="lock-note">
+            {LOCK_IS_NOT_ENCRYPTION}
           </p>
+          <p className="fine">{LOCAL_ONLY_NOTE}</p>
         </section>
 
         <section className="panel">
@@ -382,14 +402,14 @@ export function You() {
               )}
               <p className="small storage-status">
                 <Icon name={storage.persisted ? 'check' : 'clock'} size={14} />{' '}
-                {storage.persisted ? 'protected — your browser won’t clear unspoken to save space.' : 'not yet protected from your browser’s automatic clean-up.'}
+                {storage.persisted ? PERSISTED_NOTE : NOT_PERSISTED_NOTE}
               </p>
               {!storage.persisted && (
                 <button
                   className="btn btn-ghost btn-sm"
                   onClick={async () => {
                     const ok = await requestPersistentStorage();
-                    toast(ok ? 'protected.' : 'your browser decides this on its own — installing unspoken to your home screen usually helps.');
+                    toast(ok ? 'protected.' : PERSIST_DENIED_TOAST);
                     setStorage(await measureStorage());
                   }}
                 >
@@ -400,13 +420,22 @@ export function You() {
           ) : (
             <p className="muted small">measuring…</p>
           )}
+          {onIos && (
+            <div id="ios-guidance">
+              <p className="small">
+                <strong>{IOS_GUIDANCE_TITLE}</strong>
+              </p>
+              {!installed && <p className="fine">{IOS_INSTALL_STEPS}</p>}
+              <p className="fine">{IOS_BACKUP_REASON}</p>
+            </div>
+          )}
         </section>
 
         <section className="panel" id="backup" ref={backupPanel} tabIndex={-1}>
           <h2 className="panel-title serif">backup & export</h2>
-          <p className="muted small">
-            one file with every voicemail, photo, collection and setting (except your passcode). keep it in your cloud drive or on a computer, and restore it
-            any time — even on a new device. to save a single recording as an audio file, use download on its page.
+          <p className="muted small">{BACKUP_INTRO}</p>
+          <p className="small" id="backup-warning">
+            <strong>{BACKUP_NOT_ENCRYPTED_HEAD}</strong> {BACKUP_NOT_ENCRYPTED_BODY}
           </p>
           {s.lastBackupAt ? <p className="small">last backup: {formatDate(s.lastBackupAt)}</p> : <p className="small">you haven't made a backup yet.</p>}
           {progress ? (

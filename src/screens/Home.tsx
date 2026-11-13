@@ -10,6 +10,7 @@ import { useNow } from '../hooks/useNow';
 import { useTodaysEcho } from '../hooks/useEcho';
 import { useSettingsStatus } from '../hooks/useSettings';
 import { setSetting } from '../db/repo';
+import { BACKUP_NUDGE_NO_BACKUP } from '../lib/disclosures';
 import { shouldNudgeBackup } from '../lib/nudges';
 import { displayTitle, formatDate, formatDuration, greeting, plural, timeAgo } from '../lib/format';
 import { ShelfSkeleton } from '../components/Skeleton';
@@ -149,7 +150,7 @@ export function Home() {
       {nudgeBackup && (
         <aside className="nudge" aria-label="backup reminder">
           <p className="small">
-            {settings.lastBackupAt ? "it's been a while since your last backup." : 'your voicemails live only on this device.'}{' '}
+            {settings.lastBackupAt ? "it's been a while since your last backup." : BACKUP_NUDGE_NO_BACKUP}{' '}
             <Link to="/you" state={{ focus: 'backup' }} className="link">
               back them up
             </Link>

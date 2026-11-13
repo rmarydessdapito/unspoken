@@ -357,6 +357,26 @@ try {
   await page.goto(`${BASE}/you`, { waitUntil: 'networkidle0' });
   await sleep(800);
   check('settings show storage usage', (await text()).includes('of voice'));
+  // ---- privacy and backup wording, and the iPhone guidance
+  const youText = await text();
+  check('settings say the passcode is a screen lock and not encryption', youText.includes('not encryption') && youText.includes('does not encrypt your recordings, titles, notes or transcripts'));
+  check('…and no longer say device encryption already protects the recordings', !youText.includes('protected at rest'));
+  check('the privacy note says recordings are stored locally and live transcripts may use the browser’s speech service', youText.includes('stored only in this browser, on your device') && youText.includes('speech-recognition service may process what you say') && youText.includes('nothing is shared unless you tap share and confirm'));
+  check('…and no longer claims that no one is ever listening', !youText.includes('no one listening') && !youText.includes('everything lives only on this device'));
+  const warnAt = youText.indexOf('this backup file is not encrypted');
+  check('the backup section warns that a backup is not encrypted and readable', warnAt >= 0 && youText.includes('titles, notes, tags and transcripts in readable form') && youText.includes('keep it somewhere private and secure'));
+  check('…and the warning comes before the backup button', warnAt >= 0 && warnAt < youText.indexOf('back up everything'));
+  check('computers and android phones see no iphone guidance', !youText.includes('on iphone and ipad'));
+  const normalUA = await browser.userAgent();
+  await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1');
+  await page.goto(`${BASE}/you`, { waitUntil: 'networkidle0' });
+  await sleep(800);
+  const iosText = await text();
+  check('on an iphone, settings explain how to add unspoken to the home screen', iosText.includes('on iphone and ipad') && /safari, tap the share button, choose .add to home screen./.test(iosText));
+  check('…and why to keep backups, without promising the home screen prevents loss', iosText.includes('one copy, not the only copy') && iosText.includes('doesn’t guarantee that won’t happen'));
+  await page.setUserAgent(normalUA);
+  await page.goto(`${BASE}/you`, { waitUntil: 'networkidle0' });
+  await sleep(800);
   await shot('12-you');
   await clickText('set a passcode');
   await sleep(300);
@@ -459,6 +479,8 @@ try {
   await unsetting('backupNudgeDismissedAt');
   await go('/');
   check('home gently suggests a backup when there is none', !!(await page.$('.nudge')) && (await text()).includes('back them up'));
+  check('the reminder says the voicemails are stored in this browser, not that they live only on this device', (await text()).includes('your voicemails are stored in this browser on your device.') && !(await text()).includes('live only on this device'));
+  check('the sidebar (wide screens) says the journal stays in the browser', vw < 900 || ((await text()).includes('private by default. your journal stays in your browser.') && !(await text()).includes('everything stays on this device')));
   check('the reminder is small and does not hide the record button', !!(await page.$('.record-hero')) && ((await page.$eval('.nudge', (e) => e.getBoundingClientRect().height)) as number) < 90);
   await tap('[aria-label="dismiss backup reminder"]');
   check('it can be dismissed in one tap', !(await page.$('.nudge')));
