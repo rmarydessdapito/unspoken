@@ -17,6 +17,20 @@ import {
 } from '../src/db/repo';
 import { analyzeBackup, memorySink, restoreBackup, writeBackup, type RestoreOptions } from '../src/lib/backup';
 
+/** Everything in the database, including the bytes of every audio piece and photo, so 'unchanged' means unchanged. */
+async function deepSnapshot() {
+  const chunks = await Promise.all((await db.chunks.toArray()).map(async (c) => [c.voicemailId, c.segmentId, c.seq, c.ms, c.peaks, await c.blob.text()] as const));
+  const images = await Promise.all((await db.images.toArray()).map(async (i) => [i.id, i.createdAt, await i.blob.text()] as const));
+  const sort = <T,>(a: T[]) => a.map((x) => JSON.stringify(x)).sort();
+  return {
+    voicemails: sort(await db.voicemails.toArray()),
+    collections: sort(await db.collections.toArray()),
+    settings: sort(await db.settings.toArray()),
+    chunks: sort(chunks),
+    images: sort(images),
+  };
+}
+
 async function seed(id: string, segs: { id: string; chunks: number }[], extra: Partial<ReturnType<typeof newVoicemail>> = {}) {
   await db.voicemails.add(newVoicemail({ id, status: 'saved', segments: segs.map((s) => ({ id: s.id, mimeType: 'audio/webm', durationMs: s.chunks * 2000 })), durationMs: segs.reduce((a, s) => a + s.chunks * 2000, 0), ...extra }));
   for (const s of segs) for (let i = 0; i < s.chunks; i++) await db.chunks.add({ voicemailId: id, segmentId: s.id, seq: i, blob: new Blob([`${s.id}-${i};`]), ms: 2000, peaks: [0.1] });
@@ -382,5 +396,230 @@ describe('validation and rollback', () => {
     expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toBeUndefined();
     expect(await undoInterruptedRestore()).toBe(false);
     expect(await text('sm')).toBe('sm-0;sm-1;');
+  });
+});
+
+describe('a damaged or failing restore never leaves partial data behind', () => {
+  /** A backup of a device whose library is quite different from the one we then restore onto. */
+  async function setup() {
+    await seed('theirs-a', [{ id: 'sa', chunks: 4 }], { title: 'a' });
+    await seed('theirs-b', [{ id: 'sb', chunks: 3 }], { title: 'b' });
+    const photo = await saveImage(new Blob(['their-photo'], { type: 'image/jpeg' }));
+    await db.voicemails.update('theirs-a', { coverId: photo });
+    const col = await createCollection('theirs');
+    await addToCollection(col, 'theirs-a');
+    await db.settings.put({ key: 'name', value: 'their name' });
+    const zip = await backup();
+    await clearAll();
+    await seed('mine', [{ id: 'sm', chunks: 3 }], { title: 'mine' });
+    await db.settings.put({ key: 'name', value: 'my name' });
+    await db.images.put({ id: 'my-photo', blob: new Blob(['mine-photo']), createdAt: 7 });
+    return zip;
+  }
+
+  it('a backup cut short at ANY point either restores completely or changes nothing at all', async () => {
+    const zip = await setup();
+    const plan = await analyzeBackup(zip); // analysed from the intact file, then restored from a damaged copy
+    const bytes = new Uint8Array(await zip.arrayBuffer());
+    const before = await deepSnapshot();
+    const wanted = plan.manifest.chunks.length;
+    let rejected = 0;
+    for (let pct = 5; pct <= 95; pct += 5) {
+      const damaged = new Blob([bytes.slice(0, Math.floor((bytes.length * pct) / 100))]);
+      let ok = true;
+      await restoreBackup(damaged, plan, { ...plan.defaults, includeMissing: true, restoreSettings: true }, () => {}).catch(() => (ok = false));
+      if (ok) {
+        // it only "worked" because every piece really arrived: never a partial voicemail
+        expect(await db.chunks.where('voicemailId').anyOf(['theirs-a', 'theirs-b']).count(), `cut at ${pct}%`).toBe(wanted);
+        break;
+      }
+      rejected++;
+      expect(await deepSnapshot(), `cut at ${pct}%`).toEqual(before);
+      expect(await db.settings.get(RESTORE_JOURNAL_KEY), `journal left after ${pct}%`).toBeUndefined();
+    }
+    expect(rejected).toBeGreaterThan(5); // the cuts that matter really were exercised
+  });
+
+  it('a failure after ANY number of audio pieces were saved puts the whole database back', async () => {
+    const zip = await setup();
+    const plan = await analyzeBackup(zip);
+    const before = await deepSnapshot();
+    const pieces = plan.manifest.chunks.length;
+    for (let failAt = 1; failAt <= pieces; failAt++) {
+      const real = db.chunks.add.bind(db.chunks);
+      let n = 0;
+      const spy = vi.spyOn(db.chunks, 'add').mockImplementation(((row: never) => (++n === failAt ? Promise.reject(new Error(`disk error at piece ${failAt}`)) : real(row))) as never);
+      await expect(restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true, restoreSettings: true }, () => {})).rejects.toThrow('nothing was changed');
+      spy.mockRestore();
+      expect(await deepSnapshot(), `failure at piece ${failAt}`).toEqual(before);
+    }
+  });
+
+  it('a failure while making the restore visible (every table at once) changes nothing', async () => {
+    const zip = await setup();
+    const plan = await analyzeBackup(zip);
+    const before = await deepSnapshot();
+    const failures: [string, () => { mockRestore(): void }][] = [
+      ['voicemails', () => vi.spyOn(db.voicemails, 'bulkAdd').mockRejectedValue(new Error('voicemails failed'))],
+      ['collections', () => vi.spyOn(db.collections, 'bulkAdd').mockRejectedValue(new Error('collections failed'))],
+      ['settings', () => vi.spyOn(db.settings, 'bulkPut').mockRejectedValue(new Error('settings failed'))],
+    ];
+    for (const [table, fail] of failures) {
+      const spy = fail();
+      await expect(restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true, restoreSettings: true }, () => {})).rejects.toThrow('nothing was changed');
+      spy.mockRestore();
+      expect(await deepSnapshot(), `${table} failed`).toEqual(before);
+    }
+  });
+
+  it('even when the in-process undo cannot run (a crash), the next start restores the database exactly', async () => {
+    const zip = await setup();
+    const plan = await analyzeBackup(zip);
+    const before = await deepSnapshot();
+    const real = db.chunks.add.bind(db.chunks);
+    let n = 0;
+    vi.spyOn(db.chunks, 'add').mockImplementation(((row: never) => (++n === 4 ? Promise.reject(new Error('power cut')) : real(row))) as never);
+    // the undo's own transaction fails too — as if the app had died at that moment
+    vi.spyOn(db, 'transaction').mockRejectedValueOnce(new Error('app died') as never);
+    // the person is told recovery is pending — not that "nothing was changed", which would be untrue
+    const failure = await restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true }, () => {}).catch((e: Error) => e);
+    expect((failure as Error).message).toBe("that backup couldn't be restored, and putting things back isn't finished yet. close and reopen unspoken so it can finish.");
+    expect((failure as Error).message).not.toContain('nothing was changed');
+    vi.restoreAllMocks();
+    expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toBeDefined(); // the journal survived, with pieces still in the database
+    expect((await db.chunks.count()) > 3).toBe(true);
+    expect(await undoInterruptedRestore()).toBe(true); // "next start"
+    expect(await deepSnapshot()).toEqual(before);
+  });
+
+  it('a failure part-way through recovering audio for a voicemail that already exists removes only the pieces just added', async () => {
+    // this device has a voicemail that kept pieces 0 and 2 of 5; the backup has all of them
+    await seed('mine', [{ id: 'sm', chunks: 5 }], { title: 'mine' });
+    await seed('bystander', [{ id: 'sb2', chunks: 2 }], { title: 'untouched' });
+    await db.settings.put({ key: 'name', value: 'my name' });
+    await db.images.put({ id: 'my-photo', blob: new Blob(['mine-photo']), createdAt: 7 });
+    const col = await createCollection('mine too');
+    await addToCollection(col, 'mine');
+    const zip = await backup();
+    await db.chunks.where('segmentId').equals('sm').filter((c) => [1, 3, 4].includes(c.seq)).delete();
+    const before = await deepSnapshot();
+    expect(await db.chunks.where('segmentId').equals('sm').count()).toBe(2);
+
+    const plan = await analyzeBackup(zip);
+    const real = db.chunks.add.bind(db.chunks);
+    let attempts = 0;
+    let saved = 0;
+    vi.spyOn(db.chunks, 'add').mockImplementation(((row: never) => {
+      if (++attempts === 2) return Promise.reject(new Error('disk error on the second missing piece'));
+      saved++;
+      return real(row);
+    }) as never);
+    // the real restore path: it works out the missing pieces and writes its own journal
+    await expect(restoreBackup(zip, plan, plan.defaults, () => {})).rejects.toThrow('nothing was changed');
+    vi.restoreAllMocks();
+
+    expect(saved).toBe(1); // one new piece really was written before the failure, so there was something to undo
+    expect((await db.chunks.where('segmentId').equals('sm').toArray()).map((c) => c.seq).sort()).toEqual([0, 2]);
+    expect(await text('sm')).toBe('sm-0;sm-2;'); // the original pieces, byte for byte
+    expect(await deepSnapshot()).toEqual(before); // every other table too
+    expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toBeUndefined();
+
+    // and the same restore, once the disk behaves, brings the pieces back
+    const { result } = await restore(zip);
+    expect(result.summary.recovered).toBe(1);
+    expect(await text('sm')).toBe('sm-0;sm-1;sm-2;sm-3;sm-4;');
+  });
+
+  it.each([
+    ['a general error', () => new Error('db is closed')],
+    ['the device being out of space', () => new DOMException('full', 'QuotaExceededError')],
+  ])('if the safety journal cannot be written (%s), the restore does not start and changes nothing', async (_name, makeError) => {
+    const zip = await setup();
+    const plan = await analyzeBackup(zip);
+    const before = await deepSnapshot();
+    const realPut = db.settings.put.bind(db.settings);
+    vi.spyOn(db.settings, 'put').mockImplementation(((row: { key: string }) => (row.key === RESTORE_JOURNAL_KEY ? Promise.reject(makeError()) : realPut(row as never))) as never);
+    const addPiece = vi.spyOn(db.chunks, 'add');
+    await expect(restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true, restoreSettings: true }, () => {})).rejects.toThrow("that backup couldn't be restored. nothing was changed.");
+    expect(addPiece).not.toHaveBeenCalled(); // no audio was even attempted
+    vi.restoreAllMocks();
+    expect(await deepSnapshot()).toEqual(before);
+    expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toBeUndefined();
+    // nothing is stuck: with the disk fine again, the same restore completes
+    await restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true, restoreSettings: true }, () => {});
+    expect(await db.voicemails.get('theirs-a')).toBeTruthy();
+  });
+
+  describe('an undo that did not finish', () => {
+    /** A restore that fails part-way AND whose own undo fails, so its journal is all that is left. */
+    async function leaveUnfinishedRestore() {
+      const zip = await setup();
+      const plan = await analyzeBackup(zip);
+      const before = await deepSnapshot();
+      const real = db.chunks.add.bind(db.chunks);
+      let n = 0;
+      vi.spyOn(db.chunks, 'add').mockImplementation(((row: never) => (++n === 4 ? Promise.reject(new Error('power cut')) : real(row))) as never);
+      vi.spyOn(db, 'transaction').mockRejectedValueOnce(new Error('the undo failed too') as never);
+      await expect(restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true }, () => {})).rejects.toThrow(/putting things back isn't finished yet\. close and reopen unspoken/);
+      vi.restoreAllMocks();
+      const journal = await db.settings.get(RESTORE_JOURNAL_KEY);
+      expect(journal, 'the journal must survive a failed undo').toBeDefined();
+      return { zip, plan, before, journal, left: await deepSnapshot() };
+    }
+
+    it('keeps its journal when the undo fails, and a failing recovery does not delete it either', async () => {
+      const { journal, left } = await leaveUnfinishedRestore();
+      expect((journal!.value as { newVoicemailIds: string[] }).newVoicemailIds.sort()).toEqual(['theirs-a', 'theirs-b']);
+      vi.spyOn(db, 'transaction').mockRejectedValueOnce(new Error('still failing') as never);
+      await expect(undoInterruptedRestore()).rejects.toThrow('still failing');
+      vi.restoreAllMocks();
+      expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toEqual(journal); // untouched: recovery was not confirmed
+      expect(await deepSnapshot()).toEqual(left);
+    });
+
+    it('refuses another restore while it is unresolved, and never overwrites that journal', async () => {
+      await seed('another', [{ id: 'sx', chunks: 2 }]);
+      const other = await backup(); // a different backup, made before the unfinished restore below
+      await clearAll();
+      const { zip, plan, journal, left } = await leaveUnfinishedRestore();
+      const otherPlan = await analyzeBackup(other);
+      const addPiece = vi.spyOn(db.chunks, 'add');
+      const putJournal = vi.spyOn(db.settings, 'put');
+      const attempts: [string, Blob, typeof plan, RestoreOptions][] = [
+        ['same backup', zip, plan, { ...plan.defaults, includeMissing: true }],
+        ['same backup, everything on', zip, plan, { ...plan.defaults, includeMissing: true, includeErased: true, restoreSettings: true }],
+        ['a different backup', other, otherPlan, { ...otherPlan.defaults, includeMissing: true }],
+      ];
+      for (const [name, file, p, opts] of attempts) {
+        await expect(restoreBackup(file, p, opts, () => {}), name).rejects.toThrow('a previous restore is still being undone. close and reopen unspoken, then try again.');
+      }
+      expect(putJournal).not.toHaveBeenCalled(); // no new journal was written over the old one
+      expect(addPiece).not.toHaveBeenCalled(); // and no audio was touched
+      vi.restoreAllMocks();
+      expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toEqual(journal);
+      expect(await deepSnapshot()).toEqual(left);
+    });
+
+    it('allows the next restore once the undo is confirmed', async () => {
+      const { zip, plan, before } = await leaveUnfinishedRestore();
+      await expect(restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true }, () => {})).rejects.toThrow('previous restore');
+      expect(await undoInterruptedRestore()).toBe(true); // "next start": the recovery succeeds
+      expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toBeUndefined();
+      expect(await deepSnapshot()).toEqual(before);
+      await restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true }, () => {});
+      expect(await db.voicemails.get('theirs-a')).toBeTruthy();
+      expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toBeUndefined();
+    });
+  });
+
+  it('a completed restore leaves no journal, and the same restore again changes nothing', async () => {
+    const zip = await setup();
+    const plan = await analyzeBackup(zip);
+    await restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true }, () => {});
+    expect(await db.settings.get(RESTORE_JOURNAL_KEY)).toBeUndefined();
+    const after = await deepSnapshot();
+    const again = await restoreBackup(zip, plan, { ...plan.defaults, includeMissing: true }, () => {});
+    expect(again.nothingToDo).toBe(true);
+    expect(await deepSnapshot()).toEqual(after);
   });
 });
